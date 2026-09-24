@@ -1,0 +1,4 @@
+data/
+build/
+*.local
+__pycache__/
