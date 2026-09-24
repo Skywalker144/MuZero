@@ -7,12 +7,15 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
+from .config import LossConfig
 from .mcts import MCTS
 from .metrics import MetricsTracker
 from .network import MuZeroNet, scale_gradient
 from .muzero_parallel import ParallelSelfPlayer
 from .replay_buffer import ReplayBuffer
 from .scheduler import SelfPlayScheduler
+from .selfplay import GameHistory
+from .targets import PolicyHead
 from .utils import auto_device, random_augment_batch
 
 
@@ -162,6 +165,7 @@ class MuZero:
     def __init__(self, game, args):
         self.game = game
         self.args = args
+        self.loss_config = LossConfig.from_args(args)
         self.device = auto_device()
         self.model = MuZeroNet(
             game.board_size,
@@ -206,36 +210,15 @@ class MuZero:
         )
 
     def selfplay(self):
-        memory = []
-        state = self.game.get_initial_state()
-        to_play = 1
-        half_life = self.args.get("half_life", self.game.board_size)
-        while not self.game.is_terminal(state, to_play):
-
-            mcts_policy, _ = self.mcts.search(
-                state, to_play,
-                num_simulations=self.args.get("num_simulations", 1.7 * self.game.board_size ** 2)
+        history = GameHistory(self.game, self.mcts.config)
+        while history.winner is None:
+            budget = self.mcts.config.sample_budget()
+            result = self.mcts.search(
+                history.state, history.to_play, budget.visits,
+                turn_number=len(history.steps), cheap=budget.cheap,
             )
-
-            if len(memory) + 1 < half_life:
-                action = np.random.choice(len(mcts_policy), p=mcts_policy)
-            else:
-                action = int(np.argmax(mcts_policy))
-
-            memory.append({
-                "observation": self.game.encode_state(state, to_play),
-                "player": to_play,
-                "action": int(action),
-                "mcts_policy": mcts_policy,
-            })
-
-            state = self.game.get_next_state(state, action, to_play)
-            to_play = -to_play
-
-        winner = self.game.get_winner(state, to_play)
-        for step in memory:
-            step["value_target"] = float(winner) * step["player"]
-        return memory, winner, len(memory)
+            history.play(result, budget)
+        return history.result()
 
     def train_step(self):
         unroll_steps = self.args.get("unroll_steps", 5)
@@ -263,6 +246,12 @@ class MuZero:
         policy_mask = torch.tensor(
             np.array([s["policy_mask"] for s in batch]), dtype=torch.float32, device=self.device
         )
+        head_scales = torch.ones(len(PolicyHead), device=self.device)
+        head_scales[PolicyHead.SOFT] = self.loss_config.soft_policy_loss_scale
+        head_scales[PolicyHead.OPPONENT] = self.loss_config.opponent_policy_loss_scale
+        head_scales[PolicyHead.SOFT_OPPONENT] = (
+            self.loss_config.soft_policy_loss_scale * self.loss_config.opponent_policy_loss_scale
+        )
 
         batch_size = observations.shape[0]
         self.model.train()
@@ -273,17 +262,19 @@ class MuZero:
         value_loss = 0.0
         step_losses = []
         for k in range(unroll_steps + 1):
-            policy_logits, value = self.model.prediction(hidden_state)
+            policy_logits, value_logits = self.model.prediction(hidden_state)
             step_policy = -torch.sum(
-                policy_targets[:, k] * F.log_softmax(policy_logits, dim=1), dim=1
+                policy_targets[:, k] * F.log_softmax(policy_logits, dim=-1), dim=-1
             )
-            policy_term = torch.sum(policy_mask[:, k] * step_policy)
-            value_term = F.mse_loss(value, value_targets[:, k], reduction="sum")
+            policy_term = torch.sum(policy_mask[:, k] * step_policy * head_scales)
+            value_term = -torch.sum(value_targets[:, k] * F.log_softmax(value_logits, dim=-1))
             # 遵循官方伪代码：根预测权重为 1，K 个循环预测各为 1/K。
             gradient_scale = 1.0 if k == 0 else 1.0 / unroll_steps
             policy_loss = policy_loss + scale_gradient(policy_term, gradient_scale)
             value_loss = value_loss + scale_gradient(value_term, gradient_scale)
-            step_losses.append(((policy_term + value_term) / batch_size).item())
+            step_losses.append((
+                (policy_term + self.loss_config.value_loss_scale * value_term) / batch_size
+            ).item())
             if k < unroll_steps:
                 # 当前预测使用未缩放的梯度；只有后续循环跨过此边界时乘 0.5。
                 # s^0 到首次 dynamics 的连接保持不变，与官方 update_weights 一致。
@@ -293,7 +284,7 @@ class MuZero:
 
         policy_loss = policy_loss / batch_size
         value_loss = value_loss / batch_size
-        total_loss = policy_loss + self.args.get("value_loss_scale", 1.0) * value_loss
+        total_loss = policy_loss + self.loss_config.value_loss_scale * value_loss
 
         total_loss.backward()
         grad_norms = {

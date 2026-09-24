@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .targets import Outcome, PolicyHead
+
 
 def normalize_hidden_state(hidden_state: torch.Tensor) -> torch.Tensor:
     """每个样本在全部 C×H×W 元素上缩放到 [0, 1]，常量隐状态映射为 0。"""
@@ -87,7 +89,7 @@ class PredictionNet(nn.Module):
             nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=False),
             nn.GroupNorm(1, num_channels),
             nn.SiLU(inplace=True),
-            nn.Conv2d(num_channels, 1, kernel_size=1, bias=True),
+            nn.Conv2d(num_channels, len(PolicyHead), kernel_size=1, bias=True),
         )
         self.value_head = nn.Sequential(
             nn.Conv2d(num_channels, num_channels, kernel_size=1, bias=False),
@@ -97,13 +99,13 @@ class PredictionNet(nn.Module):
             nn.Flatten(),
             nn.Linear(num_channels, num_channels // 2),
             nn.SiLU(inplace=True),
-            nn.Linear(num_channels // 2, 1),
+            nn.Linear(num_channels // 2, len(Outcome)),
         )
 
     def forward(self, hidden_state):
-        policy_logits = self.policy_head(hidden_state).flatten(1)
-        value = torch.tanh(self.value_head(hidden_state)).squeeze(1)
-        return policy_logits, value
+        policy_logits = self.policy_head(hidden_state).flatten(2)
+        value_logits = self.value_head(hidden_state)
+        return policy_logits, value_logits
 
 
 class MuZeroNet(nn.Module):

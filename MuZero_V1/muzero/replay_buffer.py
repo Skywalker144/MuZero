@@ -1,5 +1,7 @@
 import numpy as np
 
+from .targets import GameStep, Outcome, PolicyHead, UnrollSample, soft_policy_target
+
 
 class ReplayBuffer:
     def __init__(
@@ -54,22 +56,31 @@ class ReplayBuffer:
             samples.append(self._build_sample(game, start, unroll_steps, action_size))
         return samples
 
-    def _build_sample(self, game, start, unroll_steps, action_size):
+    def _build_sample(self, game: list[GameStep], start: int, unroll_steps: int, action_size: int) -> UnrollSample:
         length = len(game)
         actions = np.zeros(unroll_steps, dtype=np.int64)
-        policy_targets = np.zeros((unroll_steps + 1, action_size), dtype=np.float32)
-        value_targets = np.zeros(unroll_steps + 1, dtype=np.float32)
-        policy_mask = np.zeros(unroll_steps + 1, dtype=np.float32)
+        policy_targets = np.zeros((unroll_steps + 1, len(PolicyHead), action_size), dtype=np.float32)
+        value_targets = np.zeros((unroll_steps + 1, len(Outcome)), dtype=np.float32)
+        policy_mask = np.zeros((unroll_steps + 1, len(PolicyHead)), dtype=np.float32)
         base_value = game[start]["value_target"]
         for i in range(unroll_steps + 1):
             if start + i < length:
                 step = game[start + i]
-                policy_targets[i] = step["mcts_policy"]
                 value_targets[i] = step["value_target"]
-                policy_mask[i] = 1.0
+                for offset, main, soft in (
+                    (0, PolicyHead.MAIN, PolicyHead.SOFT),
+                    (1, PolicyHead.OPPONENT, PolicyHead.SOFT_OPPONENT),
+                ):
+                    index = start + i + offset
+                    if index < length:
+                        target_step = game[index]
+                        policy_targets[i, main] = target_step["mcts_policy"]
+                        policy_targets[i, soft] = soft_policy_target(
+                            target_step["mcts_policy"], target_step["legal_actions"]
+                        )
+                        policy_mask[i, [main, soft]] = target_step["policy_weight"]
             else:
-                # 终局之后不再有真实 MCTS 策略，屏蔽 policy loss；value 沿用最终胜负
-                value_targets[i] = base_value * ((-1) ** i)
+                value_targets[i] = base_value if i % 2 == 0 else base_value[::-1]
             if i < unroll_steps and start + i < length:
                 actions[i] = game[start + i]["action"]
         return {

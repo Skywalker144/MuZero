@@ -6,6 +6,7 @@ import torch
 
 from muzero import MuZero
 from muzero.metrics import MetricsTracker
+from muzero.targets import value_target
 from envs.tictactoe import TicTacToe
 
 
@@ -13,6 +14,7 @@ from envs.tictactoe import TicTacToe
 def tiny_args(tmp_path):
     return {
         "num_simulations": 8,
+        "cheap_search_prob": 0.0,
         "pb_c_init": 1.25,
         "pb_c_base": 19652,
         "num_blocks": 1,
@@ -35,6 +37,44 @@ def tiny_args(tmp_path):
 
 
 class TestSelfplay:
+    @pytest.mark.parametrize("cheap_prob", [0.0, 0.75, 1.0])
+    def test_search_budget_matches_network_evaluations(self, tiny_args, cheap_prob):
+        mz = MuZero(TicTacToe(), {
+            **tiny_args, "cheap_search_prob": cheap_prob, "cheap_search_visits": 2,
+        })
+        evaluations = []
+        original = mz.mcts.infer_nodes
+
+        def infer(nodes):
+            evaluations.append(len(nodes))
+            return original(nodes)
+
+        mz.mcts.infer_nodes = infer
+        records, winner, length = mz.selfplay()
+        assert sum(evaluations) == sum(step["search_visits"] + 1 for step in records)
+        assert length == len(records)
+        state = mz.game.get_initial_state()
+        for step in records:
+            assert mz.game.get_legal_action_mask(state, step["player"])[step["action"]]
+            state = mz.game.get_next_state(state, step["action"], step["player"])
+            assert step["search_visits"] == (8 if step["policy_weight"] else 2)
+            np.testing.assert_array_equal(step["value_target"], value_target(winner, step["player"]))
+        assert mz.game.is_terminal(state, -records[-1]["player"])
+
+    def test_all_cheap_game_trains_value_and_dynamics_without_policy_loss(self, tiny_args):
+        mz = MuZero(TicTacToe(), {
+            **tiny_args, "cheap_search_prob": 1.0, "batch_size": 1, "min_rows": 1,
+        })
+        records, _, length = mz.selfplay()
+        mz.replay_buffer.add_game(records)
+        assert len(mz.replay_buffer) == length
+        result = mz.train_step()
+        assert result["policy"] == 0
+        assert result["value"] > 0
+        assert result["grad_norms"]["dynamics"] > 0
+        assert result["grad_norms"]["representation"] > 0
+        assert all(torch.count_nonzero(p.grad) == 0 for p in mz.model.prediction.policy_head.parameters())
+
     def test_generates_terminal_game(self, tiny_args):
         mz = MuZero(TicTacToe(), tiny_args)
         game_data, winner, game_len = mz.selfplay()
@@ -47,7 +87,8 @@ class TestSelfplay:
             assert 0 <= sample["action"] < 9
             assert sample["mcts_policy"].shape == (9,)
             assert np.isclose(sample["mcts_policy"].sum(), 1.0)
-            assert sample["value_target"] in (-1.0, 0.0, 1.0)
+            assert sample["value_target"].shape == (3,)
+            assert sample["value_target"].sum() == 1
 
     def test_training_returns_shared_model_to_eval_mode(self, tiny_args):
         args = {**tiny_args, "batch_size": 1, "min_rows": 1}
@@ -70,7 +111,7 @@ class TestValueTargets:
         mz = MuZero(TicTacToe(), tiny_args)
         game_data, winner, _ = mz.selfplay()
         for sample in game_data:
-            assert sample["value_target"] == float(winner) * sample["player"]
+            np.testing.assert_array_equal(sample["value_target"], value_target(winner, sample["player"]))
 
 
 class TestGradientScaling:
@@ -81,9 +122,6 @@ class TestGradientScaling:
     def test_train_step_matches_analytic_gradients(
         self, tiny_args, monkeypatch, unroll_steps, expected_h, expected_g, expected_f
     ):
-        # h=w_h, g(s)=w_g*s, v(s)=w_f*s，所有权重初值为 1，value 目标为 0。
-        # K=3 时，h 的梯度为 2*[1+(1+1/2+1/4)/3]；
-        # g 的共享参数梯度为 2*[1+(1+1/2)+(1+1/2+1/4)]/3。
         class Representation(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -99,13 +137,16 @@ class TestGradientScaling:
         class Prediction(Representation):
             def __init__(self):
                 super().__init__()
-                self.logits = torch.nn.Parameter(torch.zeros(9))
+                self.logits = torch.nn.Parameter(torch.zeros(4, 9))
 
             def forward(self, hidden):
-                return self.logits.expand(hidden.shape[0], -1), hidden * self.weight
+                value = hidden * self.weight
+                wdl = torch.stack((value, torch.zeros_like(value), torch.zeros_like(value)), dim=-1)
+                return self.logits.expand(hidden.shape[0], -1, -1), wdl
 
         mz = MuZero(TicTacToe(), {
             **tiny_args, "batch_size": 1, "min_rows": 1, "unroll_steps": unroll_steps,
+            "value_loss_scale": 1.0, "soft_policy_loss_scale": 0.0, "opponent_policy_loss_scale": 0.0,
         })
         mz.model = torch.nn.ModuleDict({
             "representation": Representation(),
@@ -118,7 +159,10 @@ class TestGradientScaling:
             "player": (-1) ** k,
             "action": 0,
             "mcts_policy": np.eye(9, dtype=np.float32)[0],
-            "value_target": 0.0,
+            "value_target": value_target(0, 1),
+            "legal_actions": np.ones(9, dtype=bool),
+            "policy_weight": 1.0,
+            "search_visits": 8,
         } for k in range(unroll_steps + 1)]
         sample = mz.replay_buffer._build_sample(game, 0, unroll_steps, 9)
         monkeypatch.setattr(mz.replay_buffer, "sample", lambda *args: [sample])
@@ -126,17 +170,18 @@ class TestGradientScaling:
 
         result = mz.train_step()
 
-        assert mz.model.representation.weight.grad.item() == pytest.approx(expected_h)
+        assert mz.model.representation.weight.grad.item() == pytest.approx(expected_h * np.e / (np.e + 2) / 2)
         grad_g = mz.model.dynamics.weight.grad
-        assert (0.0 if grad_g is None else grad_g.item()) == pytest.approx(expected_g)
-        assert mz.model.prediction.weight.grad.item() == pytest.approx(expected_f)
+        assert (0.0 if grad_g is None else grad_g.item()) == pytest.approx(expected_g * np.e / (np.e + 2) / 2)
+        assert mz.model.prediction.weight.grad.item() == pytest.approx(expected_f * np.e / (np.e + 2) / 2)
         policy_gradient = torch.full((9,), 1 / 9, device=mz.device)
         policy_gradient[0] -= 1
         if unroll_steps:
             policy_gradient *= 2
-        torch.testing.assert_close(mz.model.prediction.logits.grad, policy_gradient)
+        torch.testing.assert_close(mz.model.prediction.logits.grad[0], policy_gradient)
+        assert torch.count_nonzero(mz.model.prediction.logits.grad[1:]) == 0
         # scale_gradient 只改变反向传播，日志记录各预测步损失之和的 batch 均值。
-        assert result["value"] == pytest.approx(unroll_steps + 1)
+        assert result["value"] == pytest.approx((unroll_steps + 1) * np.log(np.e + 2))
         assert result["policy"] == pytest.approx((unroll_steps + 1) * np.log(9))
 
 
@@ -218,7 +263,10 @@ class TestReplayBuffer:
                 "player": 1,
                 "action": marker,
                 "mcts_policy": np.full(9, 1.0 / 9),
-                "value_target": 1.0,
+                "value_target": value_target(1, 1),
+                "legal_actions": np.ones(9, dtype=bool),
+                "policy_weight": 1.0,
+                "search_visits": 8,
             }
             for _ in range(length)
         ]
@@ -279,9 +327,9 @@ class TestReplayBuffer:
         for sample in batch:
             assert sample["observation"].shape == (3, 3, 3)
             assert sample["actions"].shape == (3,)
-            assert sample["policy_targets"].shape == (4, 9)
-            assert sample["value_targets"].shape == (4,)
-            assert sample["policy_mask"].shape == (4,)
+            assert sample["policy_targets"].shape == (4, 4, 9)
+            assert sample["value_targets"].shape == (4, 3)
+            assert sample["policy_mask"].shape == (4, 4)
 
     def test_terminal_steps_mask_policy_and_absorb_value(self):
         from muzero.replay_buffer import ReplayBuffer
@@ -291,15 +339,17 @@ class TestReplayBuffer:
         )
         game = [
             {"observation": np.zeros((3, 3, 3)), "player": 1, "action": 0,
-             "mcts_policy": np.full(9, 1.0 / 9), "value_target": 1.0},
+             "mcts_policy": np.full(9, 1.0 / 9), "value_target": value_target(1, 1),
+             "legal_actions": np.ones(9, dtype=bool), "policy_weight": 1.0, "search_visits": 8},
             {"observation": np.zeros((3, 3, 3)), "player": -1, "action": 1,
-             "mcts_policy": np.full(9, 1.0 / 9), "value_target": -1.0},
+             "mcts_policy": np.full(9, 1.0 / 9), "value_target": value_target(1, -1),
+             "legal_actions": np.ones(9, dtype=bool), "policy_weight": 1.0, "search_visits": 8},
         ]
         buf.add_game(game)
         sample = buf._build_sample(game, start=0, unroll_steps=3, action_size=9)
-        assert list(sample["policy_mask"]) == [1.0, 1.0, 0.0, 0.0]
+        np.testing.assert_array_equal(sample["policy_mask"], [[1, 1, 1, 1], [1, 1, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]])
         # 终局之后 value 目标按交替视角沿用最终胜负
-        assert list(sample["value_targets"]) == [1.0, -1.0, 1.0, -1.0]
+        np.testing.assert_array_equal(sample["value_targets"], [[1, 0, 0], [0, 0, 1], [1, 0, 0], [0, 0, 1]])
 
 
 class TestLearnLoop:

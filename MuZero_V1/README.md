@@ -1,63 +1,53 @@
 # MuZero
 
-用 Python、NumPy 和 PyTorch 实现 MuZero：搜索树里的节点保存**学习的隐状态**，节点之间的转移由**动力学网络**计算，而不是用真实规则算出下一棋盘。支持井字棋和自由规则五子棋，提供串行与批量推理并行两种自我对弈后端。
+MuZero 的棋类实现，支持井字棋和自由规则五子棋。`h` 将真实观测编码为隐状态，`g` 根据动作推进隐状态，`f` 输出四组策略 logits 和胜／平／负 logits。默认使用跨对局批量推理自我对弈。
 
-三个网络的分工、隐状态 MCTS 的流程、以及 K 步展开的训练目标见 [MuZero 技巧](../docs/MuZero.md)。
+文档与模块入口见 [文档索引](docs/README.md)。
 
-## 环境与入口
+## 运行
 
-使用 Python 3.10 或更高版本。从仓库根目录进入 `MuZero/` 后执行安装、训练、对弈和测试命令：
+在 `MuZero_V1/` 目录执行：
 
 ```bash
-cd MuZero
 python -m pip install -r requirements.txt
-
-# 井字棋
 python -m tictactoe.train
-python -m tictactoe.play
-python -m tictactoe.play -n 0      # 纯网络，不做 MCTS 搜索
-python -m tictactoe.play -n 1000   # 搜索 1000 次
-
-# 五子棋
 python -m gomoku.train
-python -m gomoku.play
-
-# 测试
-python -m pip install pytest
-python -m pytest tests/ -q
+python -m tictactoe.play
+python -m gomoku.play -n 100
+python -m tictactoe.play -n 0
 ```
 
-本机使用 Conda 环境时先执行 `conda activate pytorch`；非交互命令也可使用 `conda run -n pytorch python ...`。
+本机可使用 `conda activate pytorch`。`-n 0` 表示纯网络对弈；对弈使用 main policy 与 WDL 期望值。设备选择见 [auto_device](muzero/utils.py)。
 
-设备选择见 [auto_device](muzero/utils.py)：优先 CUDA，其次 MPS，最后 CPU。对弈入口额外支持命令行参数 `-n/--num-simulations`，`0` 表示纯网络。
+## 配置
 
-## 代码阅读顺序
+游戏入口为 [井字棋](tictactoe/train.py) 和 [五子棋](gomoku/train.py)，通过 `train_args` 覆盖默认参数。
 
-| 模块 | 内容 |
-| --- | --- |
-| [井字棋环境](envs/tictactoe.py)、[五子棋环境](envs/gomoku.py) | 状态、合法动作、落子、胜负与网络输入编码 |
-| [network.py](muzero/network.py) | 三个模块：Representation `h`、Dynamics `g`（输入隐状态 + 动作编码）、Prediction `f` |
-| [mcts.py](muzero/mcts.py) | 隐状态 MCTS：根用 `h`+`f` 并对真实棋盘屏蔽合法动作，树内用 `g`+`f` 按完整动作空间展开 |
-| [muzero_parallel.py](muzero/muzero_parallel.py) | 并行自我对弈：跨对局合并 batch，两段式推理（先 `h`/`g` 再 `f`） |
-| [replay_buffer.py](muzero/replay_buffer.py) | 整局历史、窗口裁剪、按起点构造 K 步展开样本 |
-| [trainer.py](muzero/trainer.py) | 自我对弈、K 步展开训练、损失与 checkpoint |
-| [utils.py](muzero/utils.py) | Dirichlet 噪声、含动作重映射的棋盘对称增强、设备选择与棋盘显示 |
-| [tests/](tests/) | 游戏规则、搜索、三网络训练、checkpoint 与回放采样测试 |
+- 搜索预算随机化、落子温度、root 温度、FPU、LCB、PUCT 和 shaped 根噪声：默认值、校验及调度统一定义在 [SearchConfig](muzero/config.py)。`num_simulations` 是 full 搜索预算，`cheap_search_visits` 是 cheap 搜索预算上限，均不含根评估。`cheap_search_prob=0` 关闭预算随机化。
+- WDL 与辅助策略损失权重：[LossConfig](muzero/config.py)。四个平面的顺序与目标定义见 [targets.py](muzero/targets.py)。
+- 网络规模、K 步展开、优化器、自我对弈后端、训练循环与 checkpoint：[trainer.py](muzero/trainer.py)。`parallel=False` 使用串行后端；`num_parallel_games` 控制并行对局数。
+- 动态回放窗口与采样：[ReplayBuffer](muzero/replay_buffer.py)。
 
-两个游戏均为交替行动的双人零和棋盘游戏。五子棋默认使用 9×9 棋盘，连续五子及以上获胜，不含禁手。
+训练产物写入游戏入口指定的 `data_dir`，包括 `models/`、`checkpoints/`、训练图片和 CSV。`learn()` 自动加载该目录下的 checkpoint。模型权重和回放样本必须匹配当前网络及目标结构。
 
-## 配置与训练产物
+## 算法边界
 
-训练配置分别位于 [tictactoe/train.py](tictactoe/train.py) 和 [gomoku/train.py](gomoku/train.py) 的 `train_args` 中（含 `mode`：训练为 `train`，对弈时自动切为 `eval` 以关闭 Dirichlet 噪声）。MuZero 特有的关键参数是 `unroll_steps`（展开步数 K，默认 5）。
+- 只有搜索根节点使用真实棋盘的合法动作；树内按完整动作空间展开，不调用规则引擎判断终局。每手从真实观测重新编码，不跨手复用隐状态子树。
+- 仅 full 训练搜索施加根温度与 Dirichlet 噪声。实际落子另用原始访问分布的温度调度；full 步的回放策略使用 LCB 修正后的分布。
+- shaped Dirichlet 将噪声浓度的一半均匀分配，另一半按根先验形状分配；先验封顶按棋盘尺寸缩放。`shaped_dirichlet_noise=False` 使用均匀浓度。
+- LCB 根据节点回传值的均值与平方均值修正根策略，使用最小访问比例门槛与方差正则。训练时只修正 full 步目标，对弈时用于选点；cheap 搜索与纯网络对弈不作 LCB 修正。`use_lcb_for_selection=False` 关闭。它不改变 PUCT，也不包含强制探索或目标剪枝；隐状态预测误差与相关回传样本使其不具备严格的统计置信保证。
+- cheap 步仍记录完整动作、观测和终局 WDL；其 main／soft policy 损失权重为零。opponent 两个输出的权重取决于下一步的搜索模式。
+- opponent policy 预测实际轨迹下一时刻的搜索策略。其输出不接收待选动作，也不代替动作条件化的 `g → f` 搜索。
+- 四个策略输出参与训练，只有 main policy 用于搜索。soft 目标仅在目标时刻的合法动作内平滑。终局后的所有 policy 损失关闭；WDL 目标按行棋方交替交换胜负，和棋不变。
+- 省略 reward 分支，value 直接监督真实终局胜／平／负。WDL 在搜索中转为胜概率减负概率，节点统计保持标量。
+- 串行和并行共用搜索、推理、落子与对局记录逻辑；单并行对局的等价性由测试验证。
 
-训练产物默认生成在对应游戏目录下的 `data/`，例如运行 `python -m tictactoe.train` 会写入 `tictactoe/data/`，内含 `models/`、`checkpoints/` 和统计图片。训练流程、checkpoint、动态回放窗口与绘图行为与 MuZero 路线一致，详见 [MuZero README](../MuZero/README.md#配置与训练产物)。
+## 验证
 
-## 当前行为与边界
+安装 `pytest` 后，可执行与搜索及训练相关的测试：
 
-- 自我对弈默认走**并行**后端（跨对局把待评估节点合并成 batch 推理，`parallel=False` 退回串行）；`num_parallel_games` 控制同时活跃的对局数，默认 32。`num_parallel_games=1` 时并行后端与串行逐位一致，见 [tests/test_parallel.py](tests/test_parallel.py) 的等价性测试。
-- 隐状态搜索中，树内节点按**完整动作空间**展开，不查询真实棋盘的合法动作，也不在树内判断终局；只有根节点用环境给出的合法动作屏蔽先验。真实规则仍用于推进实际对局和判定胜负。
-- PUCT 探索系数采用 `pb_c_init + log((N + pb_c_base + 1) / pb_c_base)`，其中 `N` 是父节点访问次数，默认 `pb_c_init=1.25`、`pb_c_base=19652`；串行与并行使用相同公式。选择阶段先把已访问子节点的 Q 转为父节点玩家视角，再按 `(Q + 1) / 2` 缩放到 `[0,1]`，未访问动作的价值项为 `0`，与官方棋类配置一致。网络输出、价值回传和节点统计仍使用 `[-1,1]`。
-- 按 [MuZero.md](../docs/MuZero.md) 的棋类约定，**省略 reward 分支**：value 直接学习最终胜负（标量 `tanh`，不是胜/平/负三分类），训练时终局之后的步屏蔽 policy loss、value 目标按交替视角沿用最终胜负。根观测编码玩家身份，`g` 仅接收隐状态和动作，隐状态在终局后仍会继续更新。
-- 训练沿 `h → g → g → …` 展开 K 步，K+1 组 policy/value 损失的梯度同时更新 `h`、`g`、`f`。
-- `h`、`g` 按样本将隐状态归一化到 `[0,1]`；训练采用官方伪代码的预测损失梯度缩放和循环隐状态梯度缩放，具体位置与日志损失含义见 [训练更新](../docs/MuZero.md#4完整的训练更新)。
-- 当前没有系统化的棋力评估入口；自我对弈胜率与训练损失只用于观察流程。
+```bash
+python -m pytest tests/test_search_training_features.py tests/test_noise_lcb.py tests/test_mcts.py tests/test_network.py tests/test_parallel.py tests/test_trainer.py -q
+```
+
+自我对弈统计与损失用于检查训练流程；项目没有固定对手的棋力评估入口。

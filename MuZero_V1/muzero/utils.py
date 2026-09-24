@@ -21,23 +21,37 @@ def softmax(x):
     return exp_x / np.sum(exp_x)
 
 
-def add_dirichlet_noise(policy, total_concentration, legal_actions_mask, noise_weight=0.25):
-    """
-    训练时 在根节点策略中混入 Dirichlet Noise 以鼓励探索：
+def apply_temperature(policy: np.ndarray, temperature: float) -> np.ndarray:
+    if not np.isfinite(temperature) or temperature < 0:
+        raise ValueError("temperature must be finite and nonnegative")
+    policy = np.asarray(policy, dtype=np.float64)
+    if temperature == 0:
+        result = np.zeros_like(policy)
+        result[np.argmax(policy)] = 1.0
+        return result
+    logits = np.full_like(policy, -np.inf)
+    positive = policy > 0
+    log_policy = np.log(policy[positive])
+    logits[positive] = (log_policy - log_policy.max()) / temperature
+    return softmax(logits)
 
-        noisy_policy = (1 - noise_weight) * policy + noise_weight * noise
-    
-    其中 total_concentration 一般可以设置为 0.03 * board_size^2
-    noise_weight 一般是 0.25
-    
-    只给合法动作加噪声，非法位置保持为 0。每个合法动作的浓度为 total_concentration / 合法动作数，
-    total_concentration 越小，噪声越尖锐，即越集中在少数动作上。
-    """
+
+def add_dirichlet_noise(
+    policy, total_concentration, legal_actions_mask, board_size, noise_weight=0.25, shaped=True,
+):
     legal_actions_count = np.sum(legal_actions_mask)
-    if legal_actions_count <= 1:
+    if legal_actions_count <= 1 or noise_weight == 0:
         return policy
-    per_action_concentration = total_concentration / legal_actions_count
-    noise = np.random.dirichlet([per_action_concentration] * legal_actions_count)
+    legal_policy = policy[legal_actions_mask]
+    proportions = np.full(legal_actions_count, 1.0 / legal_actions_count)
+    if shaped:
+        prior_cap = 0.01 * (19.0 / board_size) ** 2
+        log_policy = np.log(np.minimum(prior_cap, legal_policy) + 1e-20)
+        shape = np.maximum(0.0, log_policy - log_policy.mean())
+        mass = shape.sum()
+        if mass > 0:
+            proportions = 0.5 * (proportions + shape / mass)
+    noise = np.random.dirichlet(proportions * total_concentration)
     noisy_policy = policy.copy()
     noisy_policy[legal_actions_mask] = (
         (1 - noise_weight) * policy[legal_actions_mask] + noise_weight * noise
@@ -82,7 +96,7 @@ def random_augment_batch(batch, board_size):
         new_sample["observation"] = np.ascontiguousarray(observation)
         new_sample["actions"] = actions
         new_sample["policy_targets"] = np.ascontiguousarray(
-            policy_targets.reshape(-1, board_size * board_size)
+            policy_targets.reshape(sample["policy_targets"].shape)
         )
         augmented_batch.append(new_sample)
     return augmented_batch
