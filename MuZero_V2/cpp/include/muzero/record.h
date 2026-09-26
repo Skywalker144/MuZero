@@ -40,10 +40,12 @@ public:
         std::memcpy(&bits, &value, sizeof(bits));
         integer(bits);
     }
-    void game(int size, int winner, const std::vector<Step>& steps) {
-        output_.write("MZV2GAME", 8);
-        integer(size);
-        integer(static_cast<uint32_t>(winner));
+    void game(const Game& game, const std::vector<Step>& steps) {
+        output_.write(GAME_MAGIC, 8);
+        integer(game.canvas());
+        integer(game.size());
+        integer(static_cast<uint32_t>(game.rule()));
+        integer(static_cast<uint32_t>(game.winner()));
         integer(static_cast<uint32_t>(steps.size()));
         for (const auto& step : steps) {
             integer(static_cast<uint32_t>(step.player));

@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "magic": "MZV3GAME",
+  "planes": [
+    "OWN",
+    "OPPONENT",
+    "BLACK_TO_MOVE",
+    "ON_BOARD",
+    "STANDARD",
+    "RENJU",
+    "FORBIDDEN_BLACK_TURN",
+    "FORBIDDEN_WHITE_TURN"
+  ],
+  "rules": [
+    "freestyle",
+    "standard",
+    "renju"
+  ]
+}

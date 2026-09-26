@@ -3,6 +3,9 @@
 - 使用与运行入口：[README](../README.md)。
 - 默认参数与配置解析：[baseline](../configs/baseline)、[config.py](../python/muzero/config.py)。
 - 原始棋类 MuZero 预设：[muzero](../configs/muzero)；11×11 实验基线：[exp_baseline](../configs/exp_baseline)。
+- 多尺寸与多规则预设：[sky_zero](../configs/sky_zero/env.cfg)、[mixed_rules](../configs/mixed_rules/env.cfg)、[mixed_test](../configs/mixed_test/env.cfg)。
+- 输入通道、规则编号与产物版本唯一来源：[protocol.json](../protocol.json)；C++ 头由 [generate_protocol.py](../scripts/generate_protocol.py) 生成。
+- Renju 判定：[rules.cpp](../cpp/src/rules.cpp)，递归活三判定改编自 SkyZero V8.1 的 `katago/cpp/game/renju.cpp`。
 - 真实棋规与观测：[game.h](../cpp/include/muzero/game.h)。
 - MuZero 搜索、FPU、根噪声与 LCB：[search.cpp](../cpp/src/search.cpp)。
 - 对局线程与共享推理队列：[selfplay_main.cpp](../cpp/src/selfplay_main.cpp)、[batcher.cpp](../cpp/src/batcher.cpp)、[torch_backend.cpp](../cpp/src/torch_backend.cpp)。

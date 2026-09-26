@@ -5,6 +5,8 @@ import struct
 
 import numpy as np
 
+from .protocol import INPUT_PLANES, MAGIC, Plane, Rule
+
 
 class PolicyHead(IntEnum):
     MAIN = 0
@@ -23,48 +25,70 @@ def policy_head_count(auxiliary):
     return len(PolicyHead) if auxiliary else 1
 
 
+def placement_mask(observations):
+    return (observations[..., Plane.ON_BOARD, :, :] != 0) & (
+        observations[..., Plane.OWN, :, :] + observations[..., Plane.OPPONENT, :, :] == 0)
+
+
 @dataclass(frozen=True)
 class GameRecord:
     path: Path
+    canvas: int
     size: int
+    rule: Rule
     winner: int
     rows: int
 
     @classmethod
-    def inspect(cls, path, expected_size):
+    def inspect(cls, path, expected_canvas):
         path = Path(path)
         with path.open('rb') as stream:
-            header = stream.read(20)
-        if len(header) != 20:
+            header = stream.read(28)
+        if len(header) != 28:
             raise ValueError(f'Truncated game header: {path}')
-        magic, size, winner, rows = struct.unpack('<8sIiI', header)
-        if magic != b'MZV2GAME' or size != expected_size or winner not in (-1, 0, 1) or not 1 <= rows <= size * size:
+        magic, canvas, size, rule, winner, rows = struct.unpack('<8sIIIiI', header)
+        if (magic != MAGIC or canvas != expected_canvas or not 5 <= size <= canvas <= 25
+                or rule not in [int(value) for value in Rule] or winner not in (-1, 0, 1)
+                or not 1 <= rows <= size * size):
             raise ValueError(f'Invalid game header: {path}')
-        if path.stat().st_size != 20 + rows * (16 + 7 * size * size):
+        if path.stat().st_size != 28 + rows * (16 + (INPUT_PLANES + 4) * canvas * canvas):
             raise ValueError(f'Truncated or oversized game: {path}')
-        return cls(path, size, winner, rows)
+        return cls(path, canvas, size, Rule(rule), winner, rows)
 
     def load(self):
-        n = self.size * self.size
+        n = self.canvas * self.canvas
         dtype = np.dtype([('player', '<i4'), ('action', '<u4'), ('weight', '<f4'),
-                          ('visits', '<u4'), ('observation', 'u1', (3, self.size, self.size)),
+                          ('visits', '<u4'), ('observation', 'u1', (INPUT_PLANES, self.canvas, self.canvas)),
                           ('policy', '<f4', (n,))])
-        data = np.fromfile(self.path, dtype=dtype, offset=20)
+        data = np.fromfile(self.path, dtype=dtype, offset=28)
         if len(data) != self.rows:
             raise ValueError(f'Game changed after indexing: {self.path}')
         expected_players = np.where(np.arange(self.rows) % 2 == 0, 1, -1)
         if not np.array_equal(data['player'], expected_players):
             raise ValueError(f'Invalid player sequence: {self.path}')
-        board = np.zeros(n, dtype=np.int8)
+        board = np.zeros((self.canvas, self.canvas), dtype=np.int8)
+        on_board = np.zeros_like(board, dtype=bool)
+        on_board[:self.size, :self.size] = True
         for step in data:
             player, action = int(step['player']), int(step['action'])
-            expected = np.stack([board == player, board == -player, np.full(n, player == 1)])
-            if action >= n or board[action] != 0 or not np.array_equal(step['observation'].reshape(3, n), expected):
+            obs = step['observation']
+            if (action >= n or not placement_mask(obs).reshape(n)[action]
+                    or not np.array_equal(obs[Plane.OWN], board == player)
+                    or not np.array_equal(obs[Plane.OPPONENT], board == -player)
+                    or not np.array_equal(obs[Plane.ON_BOARD], on_board)
+                    or not np.array_equal(obs[Plane.BLACK_TO_MOVE], on_board & (player == 1))
+                    or not np.array_equal(obs[Plane.STANDARD], on_board & (self.rule == Rule.STANDARD))
+                    or not np.array_equal(obs[Plane.RENJU], on_board & (self.rule == Rule.RENJU))):
                 raise ValueError(f'Invalid observation/action trajectory: {self.path}')
-            board[action] = player
-        legal = (data['observation'][:, 0] + data['observation'][:, 1]).reshape(self.rows, n) == 0
-        if (not np.isin(data['observation'], [0, 1]).all() or np.any(data['action'] >= n)
-                or not legal[np.arange(self.rows), data['action']].all()
+            for plane, active_player in ((Plane.FORBIDDEN_BLACK_TURN, 1), (Plane.FORBIDDEN_WHITE_TURN, -1)):
+                forbidden = obs[plane] != 0
+                if (forbidden & ~((board == 0) & on_board)).any() or (
+                    (self.rule != Rule.RENJU or player != active_player) and forbidden.any()
+                ):
+                    raise ValueError(f'Invalid forbidden-point feature: {self.path}')
+            board.flat[action] = player
+        legal = placement_mask(data['observation']).reshape(self.rows, n)
+        if (not np.isin(data['observation'], [0, 1]).all()
                 or not np.isin(data['weight'], [0, 1]).all() or (data['visits'] < 1).any()
                 or not np.isfinite(data['policy']).all() or (data['policy'] < 0).any()
                 or not np.allclose(data['policy'].sum(1), 1, atol=1e-5)
@@ -73,8 +97,24 @@ class GameRecord:
         return data
 
 
-def catalog(data_dir, size):
-    return [GameRecord.inspect(path, size) for path in sorted(Path(data_dir).glob('selfplay/iter_*/game_*.mzg'))]
+def catalog(data_dir, canvas):
+    return [GameRecord.inspect(path, canvas) for path in sorted(Path(data_dir).glob('selfplay/iter_*/game_*.mzg'))]
+
+
+def game_statistics(records, games):
+    groups = {}
+    for record, game in zip(records, games):
+        key = f'{record.rule.name.lower()}/{record.size}'
+        group = groups.setdefault(key, dict(games=0, rows=0, black_wins=0, white_wins=0, draws=0, forbidden_losses=0))
+        group['games'] += 1
+        group['rows'] += record.rows
+        group['black_wins'] += int(record.winner == 1)
+        group['white_wins'] += int(record.winner == -1)
+        group['draws'] += int(record.winner == 0)
+        last = game[-1]
+        group['forbidden_losses'] += int(record.rule == Rule.RENJU and record.winner == -1 and last['player'] == 1
+            and last['observation'][Plane.FORBIDDEN_BLACK_TURN].reshape(-1)[last['action']] != 0)
+    return groups
 
 
 def window_size(total, c):
@@ -98,16 +138,18 @@ class Replay:
             if rows >= target:
                 break
         self.records = list(reversed(selected))
+        if any(record.canvas != config['CANVAS_SIZE'] for record in self.records):
+            raise ValueError('Replay canvas mismatch')
         self.games = [record.load() for record in self.records]
         self.ends = np.cumsum([len(game) for game in self.games])
         self.rows = rows
 
     def sample(self, rng):
         c = self.config
-        n, k, b = c['BOARD_SIZE'] ** 2, c['UNROLL_STEPS'], c['BATCH_SIZE']
+        n, k, b = c['CANVAS_SIZE'] ** 2, c['UNROLL_STEPS'], c['BATCH_SIZE']
         if self.rows < b:
             raise ValueError('Replay has fewer rows than BATCH_SIZE')
-        observations = np.empty((b, 3, c['BOARD_SIZE'], c['BOARD_SIZE']), dtype=np.float32)
+        observations = np.empty((b, INPUT_PLANES, c['CANVAS_SIZE'], c['CANVAS_SIZE']), dtype=np.float32)
         actions = np.zeros((b, k), dtype=np.int64)
         heads = policy_head_count(c['AUXILIARY_POLICY_HEADS'])
         policies = np.zeros((b, k + 1, heads, n), dtype=np.float32)
@@ -136,7 +178,7 @@ class Replay:
                     if target_row >= len(game):
                         continue
                     target = game[target_row]
-                    legal = (target['observation'][0] + target['observation'][1]).reshape(n) == 0
+                    legal = placement_mask(target['observation']).reshape(n)
                     softened = np.zeros(n, dtype=np.float32)
                     softened[legal] = (target['policy'][legal] + c['SOFT_POLICY_EPS']) ** (1 / c['SOFT_POLICY_TEMPERATURE'])
                     policies[batch, step, main] = target['policy']

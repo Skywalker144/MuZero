@@ -5,6 +5,11 @@ import os
 import re
 from pathlib import Path
 
+if __package__:
+    from .protocol import SPEC, VERSION
+else:
+    from protocol import SPEC, VERSION
+
 ROOT = Path(__file__).resolve().parents[2]
 FILE_SECTIONS = {
     'env.cfg': ('env',),
@@ -16,7 +21,7 @@ FILE_SECTIONS = {
 CONFIG_FILES = tuple(FILE_SECTIONS)
 GROUPS = {
     'run': 'SEED DEVICE MAX_ITERS MAX_TIME_SECONDS DATA_DIR INIT_MODEL'.split(),
-    'env': 'BOARD_SIZE'.split(),
+    'env': 'BOARD_SIZES BOARD_SIZE_WEIGHTS RULES RULE_WEIGHTS'.split(),
     'model': 'NUM_BLOCKS NUM_CHANNELS VALUE_HEAD AUXILIARY_POLICY_HEADS'.split(),
     'parallel': 'TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US'.split(),
     'selfplay': 'SELFPLAY_SCHEDULE GAMES_PER_ITER BOOTSTRAP_GAMES BACKFILL_FACTOR'.split(),
@@ -30,11 +35,12 @@ GROUPS = {
     'loss': 'VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE SOFT_POLICY_TEMPERATURE SOFT_POLICY_EPS'.split(),
     'replay': 'REPLAY_RATIO REPLAY_WINDOW FIXED_WINDOW_ROWS MIN_ROWS MAX_ROWS TAPER_WINDOW_EXPONENT EXPAND_WINDOW_PER_ROW'.split(),
 }
-INT_KEYS = set('BOARD_SIZE NUM_BLOCKS NUM_CHANNELS SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER'.split())
+INT_KEYS = set('NUM_BLOCKS NUM_CHANNELS SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER'.split())
 BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU'.split())
 STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE'.split())
 KEYS = {key for group in GROUPS.values() for key in group}
-FLOAT_KEYS = KEYS - INT_KEYS - BOOL_KEYS - STR_KEYS
+LIST_KEYS = {'BOARD_SIZES': int, 'BOARD_SIZE_WEIGHTS': float, 'RULES': str, 'RULE_WEIGHTS': float}
+FLOAT_KEYS = KEYS - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
 EXP_KEYS = {'MAX_ITERS', 'MAX_TIME_SECONDS', 'SHARED_INIT', 'ARM_GPUS'}
 
 
@@ -109,10 +115,16 @@ def validate(c):
             raise ValueError(f'{key} must be <= 1')
     if c['ADAM_BETA1'] >= 1 or c['ADAM_BETA2'] >= 1:
         raise ValueError('Adam betas must be < 1')
-    if c['BOARD_SIZE'] < 5:
-        raise ValueError('Gomoku requires BOARD_SIZE>=5')
-    if c['BOARD_SIZE'] > 25 or c['NUM_CHANNELS'] < 2:
-        raise ValueError('BOARD_SIZE must be <=25 and NUM_CHANNELS >=2')
+    for values_key, weights_key in (('BOARD_SIZES', 'BOARD_SIZE_WEIGHTS'), ('RULES', 'RULE_WEIGHTS')):
+        values, weights = c[values_key], c[weights_key]
+        if not values or len(set(values)) != len(values) or len(values) != len(weights):
+            raise ValueError(f'{values_key} and {weights_key} must be unique, nonempty and aligned')
+        if any(not math.isfinite(w) or w < 0 for w in weights) or not math.isfinite(sum(weights)) or sum(weights) <= 0:
+            raise ValueError(f'{weights_key} must be finite, nonnegative and have positive total')
+    if any(size < 5 or size > 25 for size in c['BOARD_SIZES']) or c['NUM_CHANNELS'] < 2:
+        raise ValueError('Board sizes must be 5..25 and NUM_CHANNELS >=2')
+    if any(rule not in SPEC['rules'] for rule in c['RULES']):
+        raise ValueError('Unknown Gomoku rule')
     if c['MAX_ROWS'] and c['MAX_ROWS'] < max(c['MIN_ROWS'], c['BATCH_SIZE']):
         raise ValueError('MAX_ROWS must be 0 or >= MIN_ROWS and BATCH_SIZE')
     if c['BACKFILL_FACTOR'] < 1:
@@ -160,7 +172,9 @@ def load_config(directory, environ=None):
     values.update({key: env[key] for key in KEYS & env.keys()})
     typed = {}
     for key, value in values.items():
-        if key in BOOL_KEYS:
+        if key in LIST_KEYS:
+            typed[key] = [LIST_KEYS[key](item.strip()) for item in value.split(',')]
+        elif key in BOOL_KEYS:
             typed[key] = boolean(value)
         elif key in INT_KEYS:
             typed[key] = int(value)
@@ -169,6 +183,7 @@ def load_config(directory, environ=None):
         else:
             typed[key] = value
     validate(typed)
+    typed['CANVAS_SIZE'] = max(typed['BOARD_SIZES'])
     if typed['DATA_DIR'] == 'auto':
         try:
             suffix = directory.resolve().relative_to(ROOT / 'configs')
@@ -191,18 +206,24 @@ def render_config(config, filename=None):
         keys = GROUPS[section]
         lines.append(f'[{section}]')
         for key in keys:
-            value = str(config[key]).lower() if key in BOOL_KEYS else str(config[key])
+            value = serialize_value(key, config[key])
             lines.append(f'{key.lower()} = {value}'.rstrip())
         lines.append('')
     return '\n'.join(lines)
 
 
+def serialize_value(key, value):
+    if key in LIST_KEYS:
+        return ','.join(map(str, value))
+    return str(int(value)) if key in BOOL_KEYS else str(value)
+
+
 def render_native_config(config):
-    return ''.join(f'{key}={int(value) if key in BOOL_KEYS else value}\n' for key, value in sorted(config.items()))
+    return ''.join(f'{key}={serialize_value(key, value)}\n' for key, value in sorted(config.items()))
 
 
 def model_identity(c):
-    return {key: c[key] for key in ('BOARD_SIZE', 'NUM_BLOCKS', 'NUM_CHANNELS', 'VALUE_HEAD', 'AUXILIARY_POLICY_HEADS')}
+    return {'PROTOCOL_VERSION': VERSION} | {key: c[key] for key in ('CANVAS_SIZE', 'NUM_BLOCKS', 'NUM_CHANNELS', 'VALUE_HEAD', 'AUXILIARY_POLICY_HEADS')}
 
 
 if __name__ == '__main__':

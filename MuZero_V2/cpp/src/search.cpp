@@ -64,7 +64,7 @@ SearchResult Search::run(const Game& game, Budget budget, bool training) {
         bool noisy = node == &root && training && !budget.cheap;
         std::vector<int> actions;
         for (int action = 0; action < game.actions(); ++action) {
-            if (node == &root && !game.legal(action))
+            if (!game.on_board(action) || (node == &root && !game.legal(action)))
                 evaluation.logits[action] = -std::numeric_limits<double>::infinity();
             else actions.push_back(action);
         }

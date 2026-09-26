@@ -12,9 +12,9 @@ struct TorchLatent : Latent {
 class TorchBackend : public BatchBackend {
     torch::Device device_;
     torch::jit::Module model_;
-    int board_size_;
+    int canvas_size_;
 public:
-    TorchBackend(const std::string& path, const std::string& device, int board_size);
+    TorchBackend(const std::string& path, const std::string& device, int canvas_size);
     std::vector<Evaluation> evaluate(const std::vector<std::shared_ptr<InferenceRequest>>& requests) override;
 };
 

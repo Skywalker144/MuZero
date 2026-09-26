@@ -16,14 +16,16 @@ struct UniformEvaluator : Evaluator {
     int actions;
     int initial_calls = 0;
     int recurrent_calls = 0;
+    int active_size = 0, canvas = 0;
     explicit UniformEvaluator(int count) : actions(count) {}
     Evaluation initial(const std::vector<float>& observation) override {
-        require(observation.size() == static_cast<size_t>(3 * actions));
+        require(observation.size() == static_cast<size_t>(INPUT_PLANES * actions));
         ++initial_calls;
         return {std::make_shared<DummyLatent>(), std::vector<double>(actions, 0.0), 0.5};
     }
     Evaluation recurrent(const std::shared_ptr<const Latent>& hidden, int action) override {
         require(hidden != nullptr && action >= 0 && action < actions);
+        if (active_size) require(action / canvas < active_size && action % canvas < active_size);
         ++recurrent_calls;
         return {std::make_shared<DummyLatent>(), std::vector<double>(actions, 0.0), 0.5};
     }
@@ -64,6 +66,18 @@ int main(int argc, char** argv) {
         require(evaluator.recurrent_calls == 32 && direct.visit_policy[12] == 0);
         auto single = search.run(root, {1, false}, false);
         require(std::abs(single.root_value) < 1e-12);
+        {
+            Game padded(5, 9, Rule::STANDARD);
+            padded.play(0);
+            UniformEvaluator mixed(81);
+            mixed.active_size = 5;
+            mixed.canvas = 9;
+            Search padded_search(config, mixed, random);
+            auto padded_result = padded_search.run(padded, {32, false}, false);
+            for (int action = 0; action < 81; ++action)
+                if (!padded.legal(action)) require(padded_result.visit_policy[action] == 0);
+            require(mixed.recurrent_calls == 32);
+        }
         Node parent;
         parent.nn_value = 0.5;
         parent.update(0.5);

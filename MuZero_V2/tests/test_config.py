@@ -10,8 +10,8 @@ class ConfigTests(unittest.TestCase):
         baseline = load_config(ROOT / 'configs/baseline', environ={})
         experiment = load_config(ROOT / 'configs/exp_baseline', environ={})
         original = load_config(ROOT / 'configs/muzero', environ={})
-        self.assertEqual(baseline['BOARD_SIZE'], 15)
-        self.assertEqual(experiment['BOARD_SIZE'], 11)
+        self.assertEqual(baseline['BOARD_SIZES'], [15])
+        self.assertEqual(experiment['BOARD_SIZES'], [11])
         self.assertEqual(baseline['FULL_SEARCH_VISITS'], 400)
         self.assertEqual(experiment['FULL_SEARCH_VISITS'], 220)
         self.assertEqual(baseline['DIRICHLET_TOTAL_CONCENTRATION'], 6.75)
@@ -80,7 +80,7 @@ class ConfigTests(unittest.TestCase):
 
     def test_validation(self):
         for key, value in [('NN_MAX_BATCH_SIZE', '0'), ('CHEAP_SEARCH_PROB', 'nan'),
-                           ('BOARD_SIZE', '3'), ('UNROLL_STEPS', '-1')]:
+                           ('BOARD_SIZES', '3'), ('UNROLL_STEPS', '-1')]:
             with self.subTest(key=key), self.assertRaises(ValueError):
                 load_config(ROOT / 'configs/baseline', environ={key: value})
 

@@ -5,6 +5,9 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <sstream>
+#include <random>
+#include "rules.h"
 
 namespace muzero {
 
@@ -44,10 +47,60 @@ public:
         if (consumed != value.size()) throw std::runtime_error("Invalid integer: " + key);
         return result;
     }
+    template<typename T> std::vector<T> list(const std::string& key) const {
+        std::vector<T> result;
+        std::istringstream stream(text(key));
+        std::string item;
+        while (std::getline(stream, item, ',')) {
+            std::istringstream value(item);
+            T parsed;
+            if (!(value >> parsed) || !(value >> std::ws).eof()) throw std::runtime_error("Invalid list: " + key);
+            result.push_back(parsed);
+        }
+        if (result.empty() || text(key).back() == ',') throw std::runtime_error("Empty list entry: " + key);
+        return result;
+    }
     bool boolean(const std::string& key) const {
         auto value = integer(key);
         if (value != 0 && value != 1) throw std::runtime_error("Invalid boolean: " + key);
         return value == 1;
+    }
+};
+
+struct GameConfig {
+    int canvas;
+    std::vector<int> sizes;
+    std::vector<Rule> rules;
+    std::vector<double> size_weights, rule_weights;
+    explicit GameConfig(const Config& c)
+        : canvas(c.integer("CANVAS_SIZE")), sizes(c.list<int>("BOARD_SIZES")),
+          size_weights(c.list<double>("BOARD_SIZE_WEIGHTS")), rule_weights(c.list<double>("RULE_WEIGHTS")) {
+        for (const auto& name : c.list<std::string>("RULES")) rules.push_back(parse_rule(name));
+        if (canvas < 5 || canvas > 25 || *std::max_element(sizes.begin(), sizes.end()) != canvas)
+            throw std::runtime_error("Invalid canvas size");
+        for (int size : sizes) if (size < 5 || size > canvas) throw std::runtime_error("Invalid board size");
+        for (const auto* weights : {&size_weights, &rule_weights}) {
+            double total = 0;
+            for (double weight : *weights) {
+                if (!std::isfinite(weight) || weight < 0) throw std::runtime_error("Invalid game weights");
+                total += weight;
+            }
+            if (!std::isfinite(total) || total <= 0) throw std::runtime_error("Empty game distribution");
+        }
+        if (sizes.size() != size_weights.size() || rules.size() != rule_weights.size())
+            throw std::runtime_error("Unaligned game distribution");
+        auto unique_sizes = sizes;
+        auto unique_rules = rules;
+        std::sort(unique_sizes.begin(), unique_sizes.end());
+        std::sort(unique_rules.begin(), unique_rules.end());
+        if (std::adjacent_find(unique_sizes.begin(), unique_sizes.end()) != unique_sizes.end() ||
+            std::adjacent_find(unique_rules.begin(), unique_rules.end()) != unique_rules.end())
+            throw std::runtime_error("Duplicate game distribution entries");
+    }
+    std::pair<int, Rule> sample(std::mt19937_64& random) const {
+        int size = sizes[std::discrete_distribution<size_t>(size_weights.begin(), size_weights.end())(random)];
+        Rule rule = rules[std::discrete_distribution<size_t>(rule_weights.begin(), rule_weights.end())(random)];
+        return {size, rule};
     }
 };
 

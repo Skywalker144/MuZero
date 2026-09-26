@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 
+from .protocol import VERSION
 from .config import CONFIG_FILES, EXP_KEYS, KEYS, ROOT, boolean, load_config, model_identity, read_profile, render_config
 from .process import install_signals, stop_process
 from .run import build_binary
@@ -66,7 +67,7 @@ def prepare_initializations(work, arms):
             seed_all(config['SEED'])
             model = create_model(config)
             with atomic_path(destination) as temporary:
-                torch.save({'identity': identity, 'model': model.state_dict()}, temporary)
+                torch.save({'protocol_version': VERSION, 'identity': identity, 'model': model.state_dict()}, temporary)
         config['INIT_MODEL'] = str(destination)
 
 

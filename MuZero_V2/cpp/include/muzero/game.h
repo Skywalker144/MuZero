@@ -1,58 +1,68 @@
 #pragma once
 
-#include <array>
+#include "rules.h"
 #include <stdexcept>
-#include <vector>
 
 namespace muzero {
 
 class Game {
-    int size_, player_ = 1, turn_ = 0, winner_ = 0;
+    Board board_;
+    int canvas_, player_ = 1, turn_ = 0, winner_ = 0;
+    Rule rule_;
     bool finished_ = false;
-    std::vector<int> board_;
 public:
-    explicit Game(int size) : size_(size) {
-        if (size < 5 || size > 25)
+    explicit Game(int size, int canvas = 0, Rule rule = Rule::FREESTYLE)
+        : board_(size), canvas_(canvas ? canvas : size), rule_(rule) {
+        if (size < 5 || size > 25 || canvas_ < size || canvas_ > 25)
             throw std::runtime_error("Invalid board dimensions");
-        board_.assign(size * size, 0);
     }
-    int size() const { return size_; }
-    int actions() const { return size_ * size_; }
+    int size() const { return board_.size; }
+    int canvas() const { return canvas_; }
+    int actions() const { return canvas_ * canvas_; }
+    Rule rule() const { return rule_; }
     int player() const { return player_; }
     int turn() const { return turn_; }
     int winner() const { return winner_; }
     bool finished() const { return finished_; }
-    bool legal(int action) const { return !finished_ && action >= 0 && action < actions() && board_[action] == 0; }
+    bool on_board(int action) const {
+        return action >= 0 && action < actions() && action / canvas_ < size() && action % canvas_ < size();
+    }
+    bool legal(int action) const {
+        return !finished_ && on_board(action) && board_.cells[action / canvas_ * size() + action % canvas_] == 0;
+    }
     std::vector<float> observation() const {
-        std::vector<float> result(3 * actions());
-        for (int i = 0; i < actions(); ++i) {
-            result[i] = board_[i] == player_;
-            result[actions() + i] = board_[i] == -player_;
-            result[2 * actions() + i] = player_ == 1;
+        std::vector<float> result(INPUT_PLANES * actions());
+        RenjuAnalyzer analyzer;
+        for (int y = 0; y < size(); ++y) {
+            for (int x = 0; x < size(); ++x) {
+                int local = y * size() + x, action = y * canvas_ + x;
+                auto set = [&](Plane plane, bool value) { result[static_cast<int>(plane) * actions() + action] = value; };
+                set(Plane::OWN, board_.cells[local] == player_);
+                set(Plane::OPPONENT, board_.cells[local] == -player_);
+                set(Plane::BLACK_TO_MOVE, player_ == 1);
+                set(Plane::ON_BOARD, true);
+                set(Plane::STANDARD, rule_ == Rule::STANDARD);
+                set(Plane::RENJU, rule_ == Rule::RENJU);
+                if (rule_ == Rule::RENJU)
+                    set(player_ == 1 ? Plane::FORBIDDEN_BLACK_TURN : Plane::FORBIDDEN_WHITE_TURN,
+                        analyzer.forbidden(board_, local));
+            }
         }
         return result;
     }
     void play(int action) {
         if (!legal(action)) throw std::runtime_error("Illegal move");
-        board_[action] = player_;
+        int local = action / canvas_ * size() + action % canvas_;
+        RenjuAnalyzer analyzer;
+        if (rule_ == Rule::RENJU && player_ == 1 && analyzer.forbidden(board_, local)) winner_ = -1;
+        board_.cells[local] = player_;
         ++turn_;
-        const std::array<std::array<int, 2>, 4> directions{{{1, 0}, {0, 1}, {1, 1}, {1, -1}}};
-        for (auto direction : directions) {
-            int count = 1;
-            for (int sign : {-1, 1}) {
-                int r = action / size_ + sign * direction[0], c = action % size_ + sign * direction[1];
-                while (r >= 0 && r < size_ && c >= 0 && c < size_ && board_[r * size_ + c] == player_) {
-                    ++count;
-                    r += sign * direction[0];
-                    c += sign * direction[1];
-                }
-            }
-            if (count >= 5) {
-                winner_ = player_;
-                finished_ = true;
-            }
+        if (!winner_) {
+            for (int length : board_.lengths(local, player_))
+                if (length == 5 || (length > 5 && (rule_ == Rule::FREESTYLE || (rule_ == Rule::RENJU && player_ == -1))))
+                    winner_ = player_;
         }
-        finished_ = finished_ || turn_ == actions();
+        finished_ = winner_ != 0 || turn_ == size() * size();
         player_ = -player_;
     }
 };

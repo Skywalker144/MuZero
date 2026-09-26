@@ -8,6 +8,7 @@ import shutil
 import sys
 import time
 
+from .protocol import VERSION
 from .config import ROOT, load_config, model_identity, render_config, render_native_config
 from .process import install_signals, run_process
 from .storage import atomic_path, run_lock, write_json
@@ -37,7 +38,7 @@ def ensure_export(data, config, iteration):
     destination = model_path(data, iteration)
     if not destination.exists():
         checkpoint = torch.load(data / 'checkpoints/latest.pt', map_location='cpu', weights_only=True)
-        if checkpoint['iteration'] != iteration or checkpoint['identity'] != model_identity(config):
+        if checkpoint['protocol_version'] != VERSION or checkpoint['iteration'] != iteration or checkpoint['identity'] != model_identity(config):
             raise ValueError('Cannot export a different checkpoint generation')
         model = create_model(config)
         model.load_state_dict(checkpoint['model'])
@@ -60,7 +61,7 @@ def initialize(data, config):
     model = create_model(config)
     if config['INIT_MODEL']:
         initial = torch.load(config['INIT_MODEL'], map_location='cpu', weights_only=True)
-        if initial['identity'] != model_identity(config):
+        if initial['protocol_version'] != VERSION or initial['identity'] != model_identity(config):
             raise ValueError('Shared initialization architecture mismatch')
         model.load_state_dict(initial['model'])
     optimizer = create_optimizer(model, config)
@@ -69,10 +70,12 @@ def initialize(data, config):
 
 def train_and_checkpoint(data, c, iteration, records):
     import torch
-    from .replay import Replay
+    from .replay import Replay, game_statistics
     from .train import create_model, create_optimizer, load_checkpoint, save_checkpoint, train_iteration
     checkpoint_path = data / 'checkpoints/latest.pt'
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    if checkpoint['protocol_version'] != VERSION or checkpoint['identity'] != model_identity(c):
+        raise ValueError('Checkpoint model/data protocol mismatch')
     if checkpoint['iteration'] == iteration:
         return checkpoint['metrics']
     if checkpoint['iteration'] != iteration - 1:
@@ -90,6 +93,7 @@ def train_and_checkpoint(data, c, iteration, records):
         replay = Replay(records, c)
         metrics.update(train_iteration(model, optimizer, replay, c, iteration, device))
         metrics['replay_rows'] = replay.rows
+        metrics['replay_groups'] = game_statistics(replay.records, replay.games)
     metrics['train_seconds'] = time.monotonic() - started
     save_checkpoint(checkpoint_path, model, optimizer, c, iteration, metrics)
     del model, optimizer
@@ -116,24 +120,26 @@ def plan_games(state, config, total_rows):
 
 def run(config, binary, limit=None):
     import torch
-    from .replay import GameRecord, catalog
+    from .replay import GameRecord, catalog, game_statistics
     data = Path(config['DATA_DIR'])
     with run_lock(data / 'logs/run.lock'):
         immutable = {key: value for key, value in config.items() if key not in MUTABLE_KEYS}
         manifest_path = data / 'logs/manifest.json'
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text())
-            if manifest['protocol_version'] != 2 or manifest['config'] != immutable:
+            if manifest['protocol_version'] != VERSION or manifest['config'] != immutable:
                 raise ValueError('DATA_DIR belongs to a different configuration; use a new DATA_DIR')
         else:
             if any((data / name).exists() and any((data / name).iterdir()) for name in ('models', 'checkpoints', 'selfplay')):
                 raise ValueError('Refusing to adopt artifacts without a manifest')
-            write_json(manifest_path, {'protocol_version': 2, 'config': immutable})
+            write_json(manifest_path, {'protocol_version': VERSION, 'config': immutable})
         torch.set_num_threads(config['TORCH_THREADS'])
         state_path = data / 'logs/state.json'
         state = json.loads(state_path.read_text()) if state_path.exists() else {
             'iteration': 0, 'elapsed_seconds': 0, 'pending': None, 'target_rows': 0,
-            'target_initialized': False, 'completed_games': 0, 'rows_per_game': config['BOARD_SIZE'] ** 2,
+            'target_initialized': False, 'completed_games': 0,
+            'rows_per_game': sum(size * size * weight for size, weight in
+                                 zip(config['BOARD_SIZES'], config['BOARD_SIZE_WEIGHTS'])) / sum(config['BOARD_SIZE_WEIGHTS']),
         }
         write_json(state_path, state)
         initialize(data, config)
@@ -152,7 +158,7 @@ def run(config, binary, limit=None):
                 directory = data / 'selfplay' / f'iter_{iteration:08d}'
                 directory.mkdir(parents=True, exist_ok=True)
                 if state['pending'] is None:
-                    records = catalog(data, config['BOARD_SIZE'])
+                    records = catalog(data, config['CANVAS_SIZE'])
                     if any(directory.glob('game_*.mzg')):
                         raise ValueError('Selfplay artifacts exist without an iteration plan')
                     planned = dict(state)
@@ -174,7 +180,7 @@ def run(config, binary, limit=None):
                 if existing - expected:
                     raise ValueError('Unexpected selfplay game IDs')
                 for path in existing:
-                    GameRecord.inspect(path, config['BOARD_SIZE']).load()
+                    GameRecord.inspect(path, config['CANVAS_SIZE']).load()
                 if existing != expected:
                     if generation != iteration - 1:
                         raise ValueError('Trained checkpoint exists before selfplay completion')
@@ -190,14 +196,13 @@ def run(config, binary, limit=None):
                         write_json(state_path, state)
                     if set(directory.glob('game_*.mzg')) != expected:
                         raise ValueError('Selfplay did not produce the planned games')
-                records = catalog(data, config['BOARD_SIZE'])
+                records = catalog(data, config['CANVAS_SIZE'])
                 current = [record for record in records if record.path.parent == directory]
-                for record in current:
-                    record.load()
+                current_groups = game_statistics(current, (record.load() for record in current))
                 metrics = train_and_checkpoint(data, config, iteration, records)
                 ensure_export(data, config, iteration)
                 rows = sum(record.rows for record in current)
-                metrics = dict(metrics, iteration=iteration, games=len(current), rows=rows,
+                metrics = dict(metrics, game_groups=current_groups, iteration=iteration, games=len(current), rows=rows,
                                total_rows=sum(record.rows for record in records),
                                black_wins=sum(record.winner == 1 for record in current),
                                draws=sum(record.winner == 0 for record in current),

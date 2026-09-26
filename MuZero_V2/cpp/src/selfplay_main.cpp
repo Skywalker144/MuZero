@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         if (argc != 7) throw std::runtime_error("Usage: muzero_selfplay resolved.cfg model.pt output_dir total_games seed game_offset");
         Config config(argv[1]);
         SearchConfig search_config(config);
-        int size = config.integer("BOARD_SIZE");
+        GameConfig game_config(config);
         int games = std::stoi(argv[4]), offset = std::stoi(argv[6]), threads = config.integer("NUM_GAME_THREADS");
         if (games < 0 || offset < 0 || threads < 1 || config.integer("TORCH_THREADS") < 1)
             throw std::runtime_error("Invalid runtime counts");
@@ -29,7 +29,7 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, stop);
         std::signal(SIGTERM, stop);
         at::set_num_threads(config.integer("TORCH_THREADS"));
-        BatchEvaluator evaluator(std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), size),
+        BatchEvaluator evaluator(std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), game_config.canvas),
                                  config.integer("NN_MAX_BATCH_SIZE"), config.integer("NN_BATCH_WAIT_US"));
         std::atomic<int> next{0}, completed{0};
         std::atomic<bool> failed{false};
@@ -44,7 +44,8 @@ int main(int argc, char** argv) {
                     auto destination = game_path(directory, index + offset);
                     if (std::filesystem::exists(destination)) { ++completed; continue; }
                     std::mt19937_64 random(seed + static_cast<uint64_t>(index + offset) * 0x9e3779b97f4a7c15ULL);
-                    Game game(size);
+                    auto [size, rule] = game_config.sample(random);
+                    Game game(size, game_config.canvas, rule);
                     Search search(search_config, evaluator, random);
                     std::vector<Step> steps;
                     while (!game.finished() && !interrupted && !failed) {
@@ -60,11 +61,12 @@ int main(int argc, char** argv) {
                     auto temporary = destination;
                     temporary += ".tmp";
                     RecordWriter writer(temporary);
-                    writer.game(size, game.winner(), steps);
+                    writer.game(game, steps);
                     std::filesystem::rename(temporary, destination);
                     int done = ++completed;
                     std::lock_guard<std::mutex> lock(output_mutex);
                     std::cout << "game=" << index + offset << " completed=" << done << '/' << games
+                              << " size=" << size << " rule=" << RULE_NAMES[static_cast<int>(rule)]
                               << " rows=" << steps.size() << " winner=" << game.winner() << std::endl;
                 }
             } catch (...) {

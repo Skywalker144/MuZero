@@ -1,6 +1,6 @@
 # MuZero V2
 
-C++17 负责棋规、MuZero MCTS、自我对弈及共享 LibTorch 批量推理；Python 负责网络、展开目标、训练和持久化编排。仅支持自由规则五子棋，连成五子或更多子获胜。各对局独立搜索，共享一个推理服务；每轮自我对弈完成后训练，随后发布下一代模型。
+C++17 负责棋规、MuZero MCTS、自我对弈及共享 LibTorch 批量推理；Python 负责网络、展开目标、训练和持久化编排。支持 Freestyle、Standard、Renju，以及同一模型的多尺寸、多规则混合训练。各对局独立搜索，共享一个推理服务；每轮自我对弈完成后训练，随后发布下一代模型。
 
 模块入口见 [文档索引](docs/README.md)。默认超参数的唯一来源是 [configs/baseline](configs/baseline)，实验调度参数见 [exp.cfg](configs/exp_muzero_opt/exp.cfg)。
 
@@ -16,6 +16,8 @@ bash scripts/run.sh --dry-run
 bash scripts/run.sh 10
 CONFIG_DIR=configs/muzero bash scripts/run.sh 10
 CONFIG_DIR=configs/exp_baseline bash scripts/run.sh 10
+CONFIG_DIR=configs/sky_zero bash scripts/run.sh 10
+CONFIG_DIR=configs/mixed_rules bash scripts/run.sh 10
 CONFIG_DIR=configs/minimal_test bash scripts/run.sh
 CONFIG_DIR=configs/exp_muzero_opt bash scripts/autoexp.sh --dry-run
 ARM_GPUS=0,1 CONFIG_DIR=configs/exp_muzero_opt bash scripts/autoexp.sh
@@ -32,7 +34,7 @@ ARM_GPUS=0,1 CONFIG_DIR=configs/exp_muzero_opt bash scripts/autoexp.sh
 | 文件 | 内容 |
 |---|---|
 | [run.cfg](configs/baseline/run.cfg) | 运行、设备、数据路径、停止条件 |
-| [env.cfg](configs/baseline/env.cfg) | 五子棋棋盘 |
+| [env.cfg](configs/baseline/env.cfg) | 棋盘尺寸、规则与每局采样权重 |
 | [net.cfg](configs/baseline/net.cfg) | 网络规模、价值头和辅助策略头 |
 | [train.cfg](configs/baseline/train.cfg) | 并行线程、批量推理、展开训练、batch、优化器、损失权重与回放窗口 |
 | [selfplay.cfg](configs/baseline/selfplay.cfg) | 产量、搜索预算、噪声、FPU、LCB、落子与根温度 |
@@ -42,6 +44,8 @@ ARM_GPUS=0,1 CONFIG_DIR=configs/exp_muzero_opt bash scripts/autoexp.sh
 优先级为：继承父配置、当前配置、叶子目录各文件的 `.local`、同名大写环境变量。例如 `[parallel] num_game_threads = 32` 可用 `NUM_GAME_THREADS=16` 覆盖。布尔值使用 `true` / `false`；配置不执行 shell。未知分组、未知参数和同层跨文件重复参数会在启动前报错。
 
 `data_dir = auto` 按配置目录生成独立数据路径。机器参数可写入不跟踪的 `run.cfg.local`、`train.cfg.local` 等文件。改变算法、网络或训练超参数应使用新的数据目录；停止条件与设备、线程和批量推理参数可在恢复时调整。
+
+多尺寸配置见 [sky_zero/env.cfg](configs/sky_zero/env.cfg)，多规则配置见 [mixed_rules/env.cfg](configs/mixed_rules/env.cfg)。尺寸与规则分别按权重在每局开始时独立采样；网络画布由尺寸列表最大值派生。回放按窗口内的局面均匀采样，因此训练局面比例会受对局长度影响。`sky_zero` 对齐 SkyZero 的棋盘及规则分布，搜索与训练仍使用 MuZero 基线。
 
 预设入口：[baseline](configs/baseline/run.cfg) 为增强基线；[muzero](configs/muzero/run.cfg) 为关闭增强的棋类 MuZero；[exp_baseline](configs/exp_baseline/env.cfg) 为 11×11 增强基线；[minimal_test](configs/minimal_test/run.cfg) 为小规模五子棋验证。`muzero` 的算法边界见 [algorithm.md](docs/algorithm.md)。
 
@@ -53,6 +57,6 @@ ARM_GPUS=0,1 CONFIG_DIR=configs/exp_muzero_opt bash scripts/autoexp.sh
 
 ## 产物与验证
 
-`DATA_DIR` 下的 `selfplay/` 保存完整对局，`checkpoints/latest.pt` 是训练状态真源，`models/` 保存各代 TorchScript 和 `latest.pt` 镜像，`logs/` 保存配置、恢复状态及逐轮 JSON 指标。回放窗口只限制训练采样范围，原始对局保留在磁盘。
+`DATA_DIR` 下的 `selfplay/` 保存完整对局，`checkpoints/latest.pt` 是训练状态真源，`models/` 保存各代 TorchScript 和 `latest.pt` 镜像，`logs/` 保存配置、恢复状态及逐轮 JSON 指标。回放窗口只限制训练采样范围，原始对局保留在磁盘。逐轮指标包含按规则和尺寸分组的对局、回放、实际训练采样量与损失统计。数据、模型和 checkpoint 必须匹配 [协议版本](protocol.json)，不兼容的产物须使用新数据目录重新训练。
 
 Linux 上的验证入口见 [tests](docs/testing.md)。

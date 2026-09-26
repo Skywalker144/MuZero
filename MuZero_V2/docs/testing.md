@@ -8,11 +8,17 @@ ctest --test-dir build --output-on-failure
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_config.py'
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_pipeline.py'
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_learning.py'
+PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_multigame.py'
+PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_masked_learning.py'
 MUZERO_TEST_BINARY="$PWD/build/muzero_selfplay" PYTHONPATH=python \
   python3 -m unittest discover -s tests -p 'test_native_pipeline.py'
 CONFIG_DIR=configs/minimal_test DATA_DIR=data/smoke bash scripts/run.sh
+CONFIG_DIR=configs/mixed_test DATA_DIR=data/mixed_smoke bash scripts/run.sh
 ```
 
+- [rules_test.cpp](../cpp/tests/rules_test.cpp)：三种规则的成五、长连、满盘、Renju 三三/四四、成五优先级和假活三。
+- [test_multigame.py](../tests/test_multigame.py)：混合分布和非法配置。
+- [test_masked_learning.py](../tests/test_masked_learning.py)：混合回放、mask、画布补零不变性、优化器与导出。
 - [core_test.cpp](../cpp/tests/core_test.cpp)：真实落子、终局、搜索预算、根合法动作与网络直出。
 - [batcher_test.cpp](../cpp/tests/batcher_test.cpp)：并发请求返回及推理异常传播。
 - [test_config.py](../tests/test_config.py)：配置继承、覆盖、循环、非法参数。
