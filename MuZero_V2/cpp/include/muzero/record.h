@@ -15,6 +15,8 @@ struct Step {
     Budget budget;
     std::vector<float> observation;
     std::vector<double> policy;
+    double weight = 1, policy_surprise = 0;
+    std::array<double, 3> network_wdl{0.5, 0, 0.5}, search_wdl{0.5, 0, 0.5};
 };
 
 struct FinishedGame {
@@ -24,6 +26,8 @@ struct FinishedGame {
     std::vector<Step> steps;
     std::vector<int> opening;
 };
+
+void apply_training_weights(FinishedGame& game, double policy_factor, double value_factor);
 
 class RecordWriter {
     std::filesystem::path directory_;

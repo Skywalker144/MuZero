@@ -13,7 +13,7 @@ public:
     double seconds = 0;
     std::map<size_t, uint64_t> initial_batches, recurrent_batches;
     MeasuredBackend(const std::string& model, const Config& c)
-        : backend_(model, c.text("DEVICE"), GameConfig(c).canvas) {}
+        : backend_(model, c.text("DEVICE"), GameConfig(c).canvas, c.number("NN_POLICY_TEMPERATURE")) {}
     std::vector<Evaluation> evaluate(const std::vector<std::shared_ptr<InferenceRequest>>& requests) override {
         auto start = Clock::now();
         auto result = backend_.evaluate(requests);

@@ -146,7 +146,7 @@ void RecordWriter::publish(const std::vector<FinishedGame>& games) {
         for (const auto& step : game.steps) {
             integer(raw, step.player);
             integer(raw, step.action);
-            floating(raw, step.budget.cheap ? 0.0f : 1.0f);
+            floating(raw, step.weight);
             integer(raw, step.budget.visits);
             for (size_t start = 0; start < step.observation.size(); start += 8) {
                 unsigned char packed = 0;

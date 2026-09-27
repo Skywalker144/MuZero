@@ -142,6 +142,12 @@ class PredictionNet(nn.Module):
             return probabilities[:, self.win] - probabilities[:, self.loss]
         return logits.squeeze(1).tanh()
 
+    def outcome_probabilities(self, logits: torch.Tensor) -> torch.Tensor:
+        if self.wdl:
+            return logits.softmax(-1)
+        value = self.utility(logits)
+        return torch.stack([(1 + value) / 2, torch.zeros_like(value), (1 - value) / 2], dim=-1)
+
 
 class MuZeroNet(nn.Module):
     def __init__(self, canvas_size: int, num_planes: int, config: ModelConfig):
@@ -170,13 +176,13 @@ class InferenceModule(nn.Module):
     def initial(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.network.representation(observation)
         policy, logits = self.network.prediction(hidden)
-        return hidden, policy[:, self.main], self.network.prediction.utility(logits)
+        return hidden, policy[:, self.main], self.network.prediction.outcome_probabilities(logits)
 
     @torch.jit.export
     def recurrent(self, hidden: torch.Tensor, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.network.dynamics(hidden, actions)
         policy, logits = self.network.prediction(hidden)
-        return hidden, policy[:, self.main], self.network.prediction.utility(logits)
+        return hidden, policy[:, self.main], self.network.prediction.outcome_probabilities(logits)
 
     def forward(self, observation: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.initial(observation)

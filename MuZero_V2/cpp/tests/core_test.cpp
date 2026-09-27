@@ -17,11 +17,14 @@ struct UniformEvaluator : Evaluator {
     int initial_calls = 0;
     int recurrent_calls = 0;
     int active_size = 0, canvas = 0;
+    bool weighted = false;
     explicit UniformEvaluator(int count) : actions(count) {}
     Evaluation initial(const std::vector<float>& observation) override {
         require(observation.size() == static_cast<size_t>(INPUT_PLANES * actions));
         ++initial_calls;
-        return {std::make_shared<DummyLatent>(), std::vector<double>(actions, 0.0), 0.5};
+        std::vector<double> logits(actions, 0.0);
+        if (weighted) logits[0] = std::log(4.0);
+        return {std::make_shared<DummyLatent>(), std::move(logits), 0.5};
     }
     Evaluation recurrent(const std::shared_ptr<const Latent>& hidden, int action) override {
         require(hidden != nullptr && action >= 0 && action < actions);
@@ -67,6 +70,22 @@ int main(int argc, char** argv) {
         auto single = search.run(root, {1, false}, false);
         require(std::abs(single.root_value) < 1e-12);
         {
+            UniformEvaluator weighted(25);
+            weighted.weighted = true;
+            SearchConfig temperatures = config;
+            temperatures.root_early = temperatures.root_late = 2.0;
+            Search temperature_search(temperatures, weighted, random);
+            auto warmed = temperature_search.run(root, {0, false}, false);
+            require(std::abs(warmed.visit_policy[0] / warmed.visit_policy[1] - 2.0) < 1e-9);
+            require(std::abs(warmed.network_policy[0] / warmed.network_policy[1] - 4.0) < 1e-9);
+            require(warmed.network_policy[12] == 0);
+            auto noisy = temperature_search.run(root, {16, false}, true);
+            require(noisy.network_policy == warmed.network_policy);
+            temperatures.root_early = temperatures.root_late = 1.0;
+            auto plain = temperature_search.run(root, {0, false}, false);
+            require(std::abs(plain.visit_policy[0] / plain.visit_policy[1] - 4.0) < 1e-9);
+        }
+        {
             Game padded(5, 9, Rule::STANDARD);
             padded.play(0);
             UniformEvaluator mixed(81);
@@ -75,7 +94,11 @@ int main(int argc, char** argv) {
             Search padded_search(config, mixed, random);
             auto padded_result = padded_search.run(padded, {32, false}, false);
             for (int action = 0; action < 81; ++action)
-                if (!padded.legal(action)) require(padded_result.visit_policy[action] == 0);
+                if (!padded.legal(action)) {
+                    require(padded_result.visit_policy[action] == 0);
+                    require(padded_result.network_policy[action] == 0);
+                }
+            require(std::abs(std::accumulate(padded_result.network_policy.begin(), padded_result.network_policy.end(), 0.0) - 1) < 1e-9);
             require(mixed.recurrent_calls == 32);
         }
         Node parent;

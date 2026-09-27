@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<BatchEvaluator> network;
         if (evaluator_kind == EvaluatorKind::Network)
             network = std::make_unique<BatchEvaluator>(
-                std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), game_config.canvas),
+                std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), game_config.canvas, config.number("NN_POLICY_TEMPERATURE")),
                 config.integer("NN_MAX_BATCH_SIZE"), config.integer("NN_BATCH_WAIT_US"));
         RecordWriter writer(directory, config.integer("SELFPLAY_ROWS_PER_SHARD"),
                             config.integer("SELFPLAY_WRITE_QUEUE"), game_config.canvas);
@@ -83,12 +83,15 @@ int main(int argc, char** argv) {
                         Budget budget{cheap ? std::min(search_config.full_search_visits, search_config.cheap_visits) : search_config.full_search_visits, cheap};
                         auto result = search.run(game, budget, true);
                         double temperature = search_config.move_temperature(game.turn(), size);
-                        int action = choose_action(result.visit_policy, temperature, random);
-                        steps.push_back({game.player(), action, budget, game.observation(), std::move(result.policy_target)});
+                        int action = choose_action(result.move_policy, temperature, random);
+                        steps.push_back({game.player(), action, budget, game.observation(), std::move(result.policy_target),
+                                         cheap ? 0.0 : 1.0, result.policy_surprise, result.network_wdl, result.search_wdl});
                         game.play(action);
                     }
                     if (!game.finished()) break;
-                    writer.enqueue({index + offset, game.canvas(), size, rule, game.winner(), std::move(steps), std::move(opening.actions)});
+                    FinishedGame finished{index + offset, game.canvas(), size, rule, game.winner(), std::move(steps), std::move(opening.actions)};
+                    apply_training_weights(finished, config.number("POLICY_SURPRISE_DATA_WEIGHT"), config.number("VALUE_SURPRISE_DATA_WEIGHT"));
+                    writer.enqueue(std::move(finished));
                 }
             } catch (...) {
                 failed = true;

@@ -164,7 +164,7 @@ int main(int argc, char** argv) {
         if(c.probability>0 && random.nextBool(c.probability)) {
             reference::LegacyEvaluatorSelector select=[&](reference::GomokuBalancedOpening::PositionEvaluator& e) {
                 random.nextBool(.5);
-                e=[&](const reference::Board& bb,const reference::BoardHistory&, int p) { return eb.initial(bb.game.observation(p)).value; };
+                e=[&](const reference::Board& bb,const reference::BoardHistory&, int p) { return eb.initial(bb.game.observation(p)).value(); };
             };
             expected=reference::generateKataGomoImpl(b,hist,player,random,settings,select);
         }

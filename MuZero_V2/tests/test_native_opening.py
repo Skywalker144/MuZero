@@ -27,11 +27,11 @@ class LinePolicy(torch.nn.Module):
         actions = self.moves[turns]
         logits = observation.new_full((observation.shape[0], 25), -1000)
         logits.scatter_(1, actions.unsqueeze(1), 0)
-        return observation, logits, observation.new_zeros((observation.shape[0],))
+        return observation, logits, observation.new_full((observation.shape[0], 3), 1 / 3)
 
     @torch.jit.export
     def recurrent(self, hidden: torch.Tensor, actions: torch.Tensor):
-        return hidden, hidden.new_zeros((hidden.shape[0], 25)), hidden.new_zeros((hidden.shape[0],))
+        return hidden, hidden.new_zeros((hidden.shape[0], 25)), hidden.new_full((hidden.shape[0], 3), 1 / 3)
 
 
 @unittest.skipUnless(os.environ.get('MUZERO_TEST_BINARY'), 'Requires native selfplay')

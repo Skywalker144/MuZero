@@ -16,7 +16,7 @@ int main(int argc, char** argv) {
         torch::Device device(argv[2]);
         auto reference = torch::jit::load(argv[1], device);
         reference.eval();
-        TorchBackend backend(argv[1], argv[2], canvas);
+        TorchBackend backend(argv[1], argv[2], canvas, 1.1);
         Game game(canvas, canvas, Rule::FREESTYLE);
         auto observation = game.observation();
         auto input = torch::from_blob(observation.data(), {1, INPUT_PLANES, canvas, canvas}, torch::kFloat32).to(device);
@@ -43,8 +43,9 @@ int main(int argc, char** argv) {
                 if (!hidden) throw std::runtime_error("Missing Torch latent");
                 auto logits = torch::from_blob(result[i].logits.data(), {1, canvas * canvas}, torch::kFloat64);
                 if (!torch::allclose(hidden->tensor, expected[0].toTensor(), 1e-4, 1e-5) ||
-                    !torch::allclose(logits, expected[1].toTensor().to(torch::kCPU).to(torch::kFloat64), 1e-4, 1e-5) ||
-                    std::abs(result[i].value - expected[2].toTensor().item<double>()) > 1e-5)
+                    !torch::allclose(logits, (expected[1].toTensor() / 1.1).to(torch::kCPU).to(torch::kFloat64), 1e-4, 1e-5) ||
+                    !torch::allclose(torch::from_blob(result[i].wdl.data(), {1, 3}, torch::kFloat64),
+                                     expected[2].toTensor().to(torch::kCPU).to(torch::kFloat64), 1e-4, 1e-5))
                     throw std::runtime_error("Backend differs from TorchScript reference at batch " + std::to_string(count) +
                         " row " + std::to_string(i) + " hidden error " +
                         std::to_string((hidden->tensor - expected[0].toTensor()).abs().max().item<double>()));

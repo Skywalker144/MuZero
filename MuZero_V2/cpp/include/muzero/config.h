@@ -104,6 +104,8 @@ struct GameConfig {
     }
 };
 
+enum class SearchProfile { SelfPlay, Evaluation };
+
 struct SearchConfig {
     int full_search_visits, cheap_visits;
     double cheap_probability, pb_c_init, pb_c_base, concentration, noise_weight;
@@ -112,25 +114,34 @@ struct SearchConfig {
     int temperature_moves;
     double lcb_stdevs, min_lcb_visits, move_early, move_late, halflife;
     double root_early, root_late, fpu, root_fpu, fpu_power;
-    explicit SearchConfig(const Config& c)
-        : full_search_visits(c.integer("FULL_SEARCH_VISITS")), cheap_visits(c.integer("CHEAP_SEARCH_VISITS")),
-          cheap_probability(c.number("CHEAP_SEARCH_PROB")), pb_c_init(c.number("PB_C_INIT")),
-          pb_c_base(c.number("PB_C_BASE")), concentration(c.number("DIRICHLET_TOTAL_CONCENTRATION")),
-          noise_weight(c.number("DIRICHLET_NOISE_WEIGHT")), shaped_noise(c.boolean("SHAPED_DIRICHLET_NOISE")),
+    double root_desired_visits;
+    bool policy_target_pruning;
+    explicit SearchConfig(const Config& c, SearchProfile profile = SearchProfile::SelfPlay)
+        : full_search_visits(c.integer("FULL_SEARCH_VISITS")),
+          cheap_visits(profile == SearchProfile::SelfPlay ? c.integer("CHEAP_SEARCH_VISITS") : full_search_visits),
+          cheap_probability(profile == SearchProfile::SelfPlay ? c.number("CHEAP_SEARCH_PROB") : 0), pb_c_init(c.number("PB_C_INIT")),
+          pb_c_base(c.number("PB_C_BASE")), concentration(profile == SearchProfile::SelfPlay ? c.number("DIRICHLET_TOTAL_CONCENTRATION") : 1),
+          noise_weight(profile == SearchProfile::SelfPlay ? c.number("DIRICHLET_NOISE_WEIGHT") : 0),
+          shaped_noise(profile == SearchProfile::SelfPlay && c.boolean("SHAPED_DIRICHLET_NOISE")),
           use_lcb(c.boolean("USE_LCB_FOR_SELECTION")), use_fpu(c.boolean("USE_FPU")),
-          move_schedule(c.text("MOVE_TEMPERATURE_SCHEDULE")), temperature_moves(c.integer("TEMPERATURE_MOVES")),
+          move_schedule(profile == SearchProfile::SelfPlay ? c.text("MOVE_TEMPERATURE_SCHEDULE") : "threshold"),
+          temperature_moves(profile == SearchProfile::SelfPlay ? c.integer("TEMPERATURE_MOVES") : 0),
           lcb_stdevs(c.number("LCB_STDEVS")),
           min_lcb_visits(c.number("MIN_VISIT_PROP_FOR_LCB")),
-          move_early(c.number("CHOSEN_MOVE_TEMPERATURE_EARLY")), move_late(c.number("CHOSEN_MOVE_TEMPERATURE")),
-          halflife(c.number("CHOSEN_MOVE_TEMPERATURE_HALFLIFE")),
-          root_early(c.number("ROOT_POLICY_TEMPERATURE_EARLY")), root_late(c.number("ROOT_POLICY_TEMPERATURE")),
+          move_early(c.number(profile == SearchProfile::SelfPlay ? "CHOSEN_MOVE_TEMPERATURE_EARLY" : "CHOSEN_MOVE_TEMPERATURE")),
+          move_late(c.number("CHOSEN_MOVE_TEMPERATURE")),
+          halflife(profile == SearchProfile::SelfPlay ? c.number("CHOSEN_MOVE_TEMPERATURE_HALFLIFE") : 1),
+          root_early(c.number(profile == SearchProfile::SelfPlay ? "ROOT_POLICY_TEMPERATURE_EARLY" : "ROOT_POLICY_TEMPERATURE")),
+          root_late(c.number("ROOT_POLICY_TEMPERATURE")),
           fpu(c.number("FPU_REDUCTION_MAX")), root_fpu(c.number("ROOT_FPU_REDUCTION_MAX")),
-          fpu_power(c.number("FPU_PARENT_WEIGHT_BY_VISITED_POLICY_POW")) {
+          fpu_power(c.number("FPU_PARENT_WEIGHT_BY_VISITED_POLICY_POW")),
+          root_desired_visits(c.number("ROOT_DESIRED_PER_CHILD_VISITS_COEFF")),
+          policy_target_pruning(c.boolean("USE_POLICY_TARGET_PRUNING")) {
         if (full_search_visits < 1 || cheap_visits < 1 || cheap_probability < 0 || cheap_probability > 1 ||
             noise_weight < 0 || noise_weight > 1 || pb_c_base <= 0 || pb_c_init < 0 ||
             concentration <= 0 || lcb_stdevs <= 0 || min_lcb_visits < 0 || min_lcb_visits > 1 ||
             move_early < 0 || move_late < 0 || halflife <= 0 || root_early <= 0 || root_late <= 0 ||
-            fpu < 0 || root_fpu < 0 || fpu_power <= 0 || temperature_moves < 0 ||
+            fpu < 0 || root_fpu < 0 || fpu_power <= 0 || temperature_moves < 0 || root_desired_visits < 0 ||
             (move_schedule != "exponential" && move_schedule != "threshold"))
             throw std::runtime_error("Invalid search configuration");
     }

@@ -78,7 +78,7 @@ class Initializer {
     }
     double value(const Game& game, int player) {
         check_cancelled();
-        return evaluator_.initial(game.observation(player)).value;
+        return evaluator_.initial(game.observation(player)).value();
     }
     int nearby_move(const Game& game, double avg_dist) {
         int size = game.size();

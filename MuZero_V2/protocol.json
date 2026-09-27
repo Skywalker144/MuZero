@@ -1,6 +1,6 @@
 {
-  "version": 5,
-  "magic": "MZV5SHRD",
+  "version": 6,
+  "magic": "MZV6SHRD",
   "planes": [
     "OWN",
     "OPPONENT",

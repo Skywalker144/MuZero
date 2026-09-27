@@ -18,20 +18,20 @@ int main(int argc, char** argv) {
         auto first = evaluator.initial(game.observation());
         auto repeated = replica.initial(game.observation());
         require(first.hidden && first.logits.size() == 81);
-        require(first.logits == repeated.logits && first.value == repeated.value);
+        require(first.logits == repeated.logits && first.value() == repeated.value());
         require(first.logits != other.initial(game.observation()).logits);
         auto child = evaluator.recurrent(first.hidden, 1);
         auto same_child = replica.recurrent(repeated.hidden, 1);
-        require(child.logits == same_child.logits && child.value == same_child.value);
+        require(child.logits == same_child.logits && child.value() == same_child.value());
         require(child.logits != evaluator.recurrent(first.hidden, 2).logits);
         require(child.logits != evaluator.recurrent(child.hidden, 1).logits);
         double total = 0;
         for (int seed = 0; seed < 1000; ++seed) {
             RandomEvaluator sample(9, seed);
             auto result = sample.initial(game.observation());
-            require(std::isfinite(result.value) && std::abs(result.value) <= 1);
+            require(std::isfinite(result.value()) && std::abs(result.value()) <= 1);
             for (double logit : result.logits) require(std::isfinite(logit));
-            total += result.value;
+            total += result.value();
         }
         require(std::abs(total / 1000) < 0.03);
         std::mt19937_64 random(17), matching_random(17);
