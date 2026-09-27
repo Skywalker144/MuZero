@@ -56,3 +56,5 @@ htmlcov/
 
 # Logs
 *.log
+
+tmp*/
