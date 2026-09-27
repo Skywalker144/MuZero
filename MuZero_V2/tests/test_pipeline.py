@@ -61,7 +61,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(state['target_rows'], 52800)
 
     def test_fixed_collection_has_no_cumulative_adjustment(self):
-        c = load_config(ROOT / 'configs/muzero', environ={'SELFPLAY_SCHEDULE': 'fixed'})
+        c = load_config(ROOT / 'configs/exp_muzero', environ={'SELFPLAY_SCHEDULE': 'fixed'})
         for iteration in range(4):
             with self.subTest(iteration=iteration):
                 state = {'iteration': iteration, 'target_rows': 0, 'rows_per_game': 50}
@@ -89,7 +89,7 @@ class PipelineTests(unittest.TestCase):
     def test_experiment_limits_and_destinations(self):
         _, settings, arms, slots = experiment_plan(ROOT / 'configs/exp_muzero_opt', environ={})
         self.assertEqual(len(arms), 2)
-        self.assertEqual([arm['name'] for arm in arms], ['baseline', 'muzero'])
+        self.assertEqual([arm['name'] for arm in arms], ['exp_baseline', 'exp_muzero'])
         for arm in arms:
             expected = load_config(ROOT / 'configs' / arm['name'], environ={})
             actual = arm['config']

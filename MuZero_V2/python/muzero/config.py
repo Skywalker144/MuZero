@@ -26,25 +26,34 @@ GROUPS = {
     'env': 'BOARD_SIZES BOARD_SIZE_WEIGHTS RULES RULE_WEIGHTS'.split(),
     'model': MODEL_KEYS,
     'parallel': 'TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US'.split(),
-    'selfplay': 'BOOTSTRAP_EVALUATOR SELFPLAY_SCHEDULE GAMES_PER_ITER BOOTSTRAP_GAMES BACKFILL_FACTOR SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE'.split(),
+    'selfplay': 'BOOTSTRAP_EVALUATOR SELFPLAY_SCHEDULE GAMES_PER_ITER BOOTSTRAP_GAMES BACKFILL_FACTOR SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE POLICY_SURPRISE_DATA_WEIGHT VALUE_SURPRISE_DATA_WEIGHT'.split(),
     'opening': 'BALANCED_OPENING_PROB BALANCED_OPENING_MAX_TRIES BALANCED_OPENING_AVG_DIST_FACTOR BALANCED_OPENING_BALANCE_EXPONENT BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY POLICY_INIT_AVG_MOVE_NUM POLICY_INIT_TEMPERATURE'.split(),
-    'search': 'FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS CHEAP_SEARCH_PROB PB_C_INIT PB_C_BASE'.split(),
+    'search': 'FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS CHEAP_SEARCH_PROB PB_C_INIT PB_C_BASE ROOT_DESIRED_PER_CHILD_VISITS_COEFF USE_POLICY_TARGET_PRUNING'.split(),
     'noise': 'DIRICHLET_TOTAL_CONCENTRATION DIRICHLET_NOISE_WEIGHT SHAPED_DIRICHLET_NOISE'.split(),
     'fpu': 'USE_FPU FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX FPU_PARENT_WEIGHT_BY_VISITED_POLICY_POW'.split(),
     'lcb': 'USE_LCB_FOR_SELECTION LCB_STDEVS MIN_VISIT_PROP_FOR_LCB'.split(),
-    'temperature': 'MOVE_TEMPERATURE_SCHEDULE TEMPERATURE_MOVES CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE CHOSEN_MOVE_TEMPERATURE_HALFLIFE ROOT_POLICY_TEMPERATURE_EARLY ROOT_POLICY_TEMPERATURE'.split(),
+    'temperature': 'MOVE_TEMPERATURE_SCHEDULE TEMPERATURE_MOVES CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE CHOSEN_MOVE_TEMPERATURE_HALFLIFE ROOT_POLICY_TEMPERATURE_EARLY ROOT_POLICY_TEMPERATURE NN_POLICY_TEMPERATURE'.split(),
     'training': 'BATCH_SIZE TRAIN_STEPS UNROLL_STEPS HIDDEN_GRADIENT_SCALE SYMMETRY_AUGMENTATION BATCH_PREFETCH EMA_HALFLIFE_SAMPLES'.split(),
     'optimizer': 'LR WEIGHT_DECAY ADAM_BETA1 ADAM_BETA2 ADAM_EPS'.split(),
     'loss': 'VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE SOFT_POLICY_TEMPERATURE SOFT_POLICY_EPS'.split(),
     'replay': 'REPLAY_RATIO REPLAY_WINDOW FIXED_WINDOW_ROWS MIN_ROWS MAX_ROWS TAPER_WINDOW_EXPONENT EXPAND_WINDOW_PER_ROW'.split(),
 }
 INT_KEYS = MODEL_INT_KEYS | set('SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE BATCH_PREFETCH'.split())
-INT_KEYS.add('BALANCED_OPENING_MAX_TRIES')
-BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY'.split())
+INT_KEYS.update({'BALANCED_OPENING_MAX_TRIES', 'NUM_SEARCH_THREADS'})
+BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY USE_POLICY_TARGET_PRUNING'.split())
 STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE BOOTSTRAP_EVALUATOR'.split())
 KEYS = {key for group in GROUPS.values() for key in group}
 LIST_KEYS = {'BOARD_SIZES': int, 'BOARD_SIZE_WEIGHTS': float, 'RULES': str, 'RULE_WEIGHTS': float}
-FLOAT_KEYS = KEYS - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
+EVAL_GROUPS = {
+    'search': 'FULL_SEARCH_VISITS NUM_SEARCH_THREADS VIRTUAL_LOSS PB_C_INIT PB_C_BASE ROOT_DESIRED_PER_CHILD_VISITS_COEFF USE_POLICY_TARGET_PRUNING'.split(),
+    'fpu': GROUPS['fpu'],
+    'lcb': GROUPS['lcb'],
+    'temperature': 'CHOSEN_MOVE_TEMPERATURE ROOT_POLICY_TEMPERATURE NN_POLICY_TEMPERATURE'.split(),
+    'inference': 'DEVICE TORCH_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US'.split(),
+    'eval': ['SEED'],
+}
+EVAL_KEYS = {key for group in EVAL_GROUPS.values() for key in group}
+FLOAT_KEYS = (KEYS | EVAL_KEYS) - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
 EXP_KEYS = {'MAX_ITERS', 'MAX_TIME_SECONDS', 'SHARED_INIT', 'ARM_GPUS'}
 
 
@@ -58,7 +67,8 @@ def boolean(value):
 
 def read_profile(path, experiment=False):
     filename = Path(path).name.removesuffix('.local')
-    allowed_sections = ('experiment',) if filename == 'exp.cfg' and experiment else FILE_SECTIONS.get(filename)
+    allowed_sections = (tuple(EVAL_GROUPS) if filename == 'eval.cfg' else
+                        ('experiment',) if filename == 'exp.cfg' and experiment else FILE_SECTIONS.get(filename))
     if allowed_sections is None:
         raise ValueError(f'{path}: unsupported configuration filename')
     parser = configparser.ConfigParser(interpolation=None)
@@ -72,7 +82,7 @@ def read_profile(path, experiment=False):
     parent = parser['profile'].get('extends')
     if filename == 'exp.cfg' and parent:
         raise ValueError(f'{path}: experiment umbrellas do not support extends')
-    groups = GROUPS | {'experiment': EXP_KEYS}
+    groups = EVAL_GROUPS if filename == 'eval.cfg' else GROUPS | {'experiment': EXP_KEYS}
     values = {}
     for section in parser.sections():
         if section == 'profile':
@@ -104,21 +114,29 @@ def config_chain(directory, seen=None):
     return chain + [directory]
 
 
-def validate(c):
+def validate_parameters(c):
     nonnegative = set('TEMPERATURE_MOVES SEED NN_BATCH_WAIT_US UNROLL_STEPS MAX_ROWS MAX_ITERS MAX_TIME_SECONDS'.split())
     nonnegative.update(key for key in MODEL_INT_KEYS if key.endswith('_NUM_BLOCKS'))
-    for key in INT_KEYS:
+    for key in INT_KEYS & c.keys():
         if c[key] < (0 if key in nonnegative else 1):
             raise ValueError(f'{key} out of range')
-    zero_allowed = set('CHEAP_SEARCH_PROB PB_C_INIT DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX WEIGHT_DECAY VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE HIDDEN_GRADIENT_SCALE ADAM_BETA1 ADAM_BETA2'.split())
+    zero_allowed = set('CHEAP_SEARCH_PROB PB_C_INIT DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX WEIGHT_DECAY VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE HIDDEN_GRADIENT_SCALE ADAM_BETA1 ADAM_BETA2 ROOT_DESIRED_PER_CHILD_VISITS_COEFF POLICY_SURPRISE_DATA_WEIGHT VALUE_SURPRISE_DATA_WEIGHT'.split())
     zero_allowed.update('BALANCED_OPENING_PROB BALANCED_OPENING_AVG_DIST_FACTOR BALANCED_OPENING_BALANCE_EXPONENT BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK POLICY_INIT_AVG_MOVE_NUM'.split())
-    for key in FLOAT_KEYS:
+    for key in FLOAT_KEYS & c.keys():
         value = c[key]
         if not math.isfinite(value) or value < 0 or (value == 0 and key not in zero_allowed):
             raise ValueError(f'{key} out of range')
     for key in 'CHEAP_SEARCH_PROB DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB HIDDEN_GRADIENT_SCALE BALANCED_OPENING_PROB BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK'.split():
-        if c[key] > 1:
+        if key in c and c[key] > 1:
             raise ValueError(f'{key} must be <= 1')
+    if not re.fullmatch(r'cpu|cuda(?::[0-9]+)?', c['DEVICE']):
+        raise ValueError('DEVICE must be cpu or cuda[:index]')
+
+
+def validate(c):
+    validate_parameters(c)
+    if c['POLICY_SURPRISE_DATA_WEIGHT'] + c['VALUE_SURPRISE_DATA_WEIGHT'] > 1:
+        raise ValueError('Surprise data weights must sum to <= 1')
     for key, maximum in [('BALANCED_OPENING_MAX_TRIES', 1000), ('BALANCED_OPENING_AVG_DIST_FACTOR', 100),
                          ('BALANCED_OPENING_BALANCE_EXPONENT', 100), ('POLICY_INIT_AVG_MOVE_NUM', 100)]:
         if c[key] > maximum:
@@ -141,8 +159,6 @@ def validate(c):
         raise ValueError('MAX_ROWS must be 0 or >= MIN_ROWS and BATCH_SIZE')
     if c['BACKFILL_FACTOR'] < 1:
         raise ValueError('BACKFILL_FACTOR must be >=1')
-    if not re.fullmatch(r'cpu|cuda(?::[0-9]+)?', c['DEVICE']):
-        raise ValueError('DEVICE must be cpu or cuda[:index]')
     for key, choices in {
         'BOOTSTRAP_EVALUATOR': {'random', 'network'},
         'VALUE_HEAD': {'scalar', 'wdl'},
@@ -158,7 +174,7 @@ def validate(c):
         raise ValueError('FIXED_WINDOW_ROWS must be >= MIN_ROWS and BATCH_SIZE')
 
 
-def load_config(directory, environ=None):
+def resolve_profile(directory, files, keys, environ, prefix=''):
     directory = Path(directory)
     if not directory.is_absolute():
         directory = ROOT / directory
@@ -166,7 +182,7 @@ def load_config(directory, environ=None):
     layers = [(layer, '') for layer in config_chain(directory)] + [(directory, '.local')]
     for layer, suffix in layers:
         merged = {}
-        for filename in CONFIG_FILES:
+        for filename in files:
             path = layer / (filename + suffix)
             if not path.exists():
                 continue
@@ -178,11 +194,11 @@ def load_config(directory, environ=None):
                 raise ValueError(f'{layer}: duplicate keys across files: {sorted(overlap)}')
             merged.update(entries)
         values.update(merged)
-    missing = KEYS - values.keys()
+    missing = keys - values.keys()
     if missing:
         raise ValueError(f'Missing keys: {sorted(missing)}')
     env = os.environ if environ is None else environ
-    values.update({key: env[key] for key in KEYS & env.keys()})
+    values.update({key: env[prefix + key] for key in keys if prefix + key in env})
     typed = {}
     for key, value in values.items():
         if key in LIST_KEYS:
@@ -195,6 +211,17 @@ def load_config(directory, environ=None):
             typed[key] = float(value)
         else:
             typed[key] = value
+    return typed, directory
+
+
+def load_eval_config(directory, environ=None):
+    typed, _ = resolve_profile(directory, ('eval.cfg',), EVAL_KEYS, environ, 'EVAL_')
+    validate_parameters(typed)
+    return typed
+
+
+def load_config(directory, environ=None):
+    typed, directory = resolve_profile(directory, CONFIG_FILES, KEYS, environ)
     validate(typed)
     typed['CANVAS_SIZE'] = max(typed['BOARD_SIZES'])
     if typed['DATA_DIR'] == 'auto':
@@ -214,9 +241,10 @@ def load_config(directory, environ=None):
 
 def render_config(config, filename=None):
     lines = []
-    sections = FILE_SECTIONS[filename] if filename else GROUPS
+    groups = EVAL_GROUPS if filename == 'eval.cfg' else GROUPS
+    sections = tuple(groups) if filename == 'eval.cfg' else FILE_SECTIONS[filename] if filename else groups
     for section in sections:
-        keys = GROUPS[section]
+        keys = groups[section]
         lines.append(f'[{section}]')
         for key in keys:
             value = serialize_value(key, config[key])
@@ -243,10 +271,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config-dir', default='configs/baseline')
     parser.add_argument('--native', action='store_true')
+    parser.add_argument('--eval', action='store_true')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
-    config = load_config(args.config_dir, environ={})
-    text = render_native_config(config) if args.native else render_config(config)
+    config = (load_eval_config if args.eval else load_config)(args.config_dir, environ={})
+    text = render_native_config(config) if args.native else render_config(config, 'eval.cfg' if args.eval else None)
     if args.output:
         args.output.write_text(text)
     else:

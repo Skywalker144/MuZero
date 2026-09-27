@@ -9,15 +9,15 @@ class ConfigTests(unittest.TestCase):
     def test_baseline_and_delta(self):
         baseline = load_config(ROOT / 'configs/baseline', environ={})
         experiment = load_config(ROOT / 'configs/exp_baseline', environ={})
-        original = load_config(ROOT / 'configs/muzero', environ={})
+        original = load_config(ROOT / 'configs/exp_muzero', environ={})
         self.assertEqual(baseline['BOARD_SIZES'], [15, 14, 13, 12, 11])
-        self.assertEqual(experiment['BOARD_SIZES'], [11, 10, 9])
+        self.assertEqual(experiment['BOARD_SIZES'], baseline['BOARD_SIZES'])
         self.assertEqual(baseline['FULL_SEARCH_VISITS'], 400)
         self.assertEqual(baseline['BOOTSTRAP_EVALUATOR'], 'random')
         self.assertEqual(load_config(ROOT / 'configs/baseline', environ={'BOOTSTRAP_EVALUATOR': 'network'})['BOOTSTRAP_EVALUATOR'], 'network')
-        self.assertEqual(experiment['FULL_SEARCH_VISITS'], 220)
+        self.assertEqual(experiment['FULL_SEARCH_VISITS'], baseline['FULL_SEARCH_VISITS'])
         self.assertEqual(baseline['DIRICHLET_TOTAL_CONCENTRATION'], 6.75)
-        self.assertEqual(experiment['DIRICHLET_TOTAL_CONCENTRATION'], 3.63)
+        self.assertEqual(experiment['DIRICHLET_TOTAL_CONCENTRATION'], baseline['DIRICHLET_TOTAL_CONCENTRATION'])
         self.assertEqual(experiment['VALUE_LOSS_SCALE'], baseline['VALUE_LOSS_SCALE'])
         self.assertEqual(original['VALUE_HEAD'], 'scalar')
         for key in ('AUXILIARY_POLICY_HEADS', 'USE_FPU', 'USE_LCB_FOR_SELECTION',
@@ -58,7 +58,7 @@ class ConfigTests(unittest.TestCase):
     def test_five_file_layout(self):
         expected = {'env.cfg', 'selfplay.cfg', 'net.cfg', 'train.cfg', 'run.cfg'}
         self.assertEqual(set(CONFIG_FILES), expected)
-        self.assertEqual({path.name for path in (ROOT / 'configs/baseline').glob('*.cfg')}, expected)
+        self.assertEqual({path.name for path in (ROOT / 'configs/baseline').glob('*.cfg')}, expected | {'eval.cfg'})
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / 'run.cfg').write_text('extends = baseline\n')
