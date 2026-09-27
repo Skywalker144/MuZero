@@ -1,12 +1,12 @@
 #pragma once
 
 #include "search.h"
-#include <cstdint>
-#include <cstring>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
-#include <fstream>
-#include <iomanip>
-#include <sstream>
+#include <mutex>
+#include <set>
+#include <thread>
 
 namespace muzero {
 
@@ -17,47 +17,33 @@ struct Step {
     std::vector<double> policy;
 };
 
-inline std::filesystem::path game_path(const std::filesystem::path& directory, int index) {
-    std::ostringstream name;
-    name << "game_" << std::setw(8) << std::setfill('0') << index << ".mzg";
-    return directory / name.str();
-}
+struct FinishedGame {
+    int id, canvas, size;
+    Rule rule;
+    int winner;
+    std::vector<Step> steps;
+    std::vector<int> opening;
+};
 
 class RecordWriter {
-    std::ofstream output_;
+    std::filesystem::path directory_;
+    size_t max_rows_, capacity_;
+    unsigned next_shard_ = 0;
+    std::set<int> committed_;
+    std::mutex mutex_;
+    std::condition_variable changed_;
+    std::deque<FinishedGame> queue_;
+    bool closing_ = false;
+    std::exception_ptr failure_;
+    std::thread worker_;
+    void write_loop();
+    void publish(const std::vector<FinishedGame>& games);
 public:
-    explicit RecordWriter(const std::filesystem::path& path) : output_(path, std::ios::binary | std::ios::trunc) {
-        output_.exceptions(std::ios::badbit | std::ios::failbit);
-    }
-    void integer(uint32_t value) {
-        char bytes[4];
-        for (int i = 0; i < 4; ++i) bytes[i] = static_cast<char>((value >> (8 * i)) & 255);
-        output_.write(bytes, 4);
-    }
-    void floating(float value) {
-        static_assert(sizeof(float) == sizeof(uint32_t));
-        uint32_t bits;
-        std::memcpy(&bits, &value, sizeof(bits));
-        integer(bits);
-    }
-    void game(const Game& game, const std::vector<Step>& steps) {
-        output_.write(GAME_MAGIC, 8);
-        integer(game.canvas());
-        integer(game.size());
-        integer(static_cast<uint32_t>(game.rule()));
-        integer(static_cast<uint32_t>(game.winner()));
-        integer(static_cast<uint32_t>(steps.size()));
-        for (const auto& step : steps) {
-            integer(static_cast<uint32_t>(step.player));
-            integer(step.action);
-            floating(step.budget.cheap ? 0.0f : 1.0f);
-            integer(step.budget.visits);
-            for (float value : step.observation) output_.put(static_cast<char>(value));
-            for (double value : step.policy) floating(static_cast<float>(value));
-        }
-        output_.flush();
-        output_.close();
-    }
+    RecordWriter(const std::filesystem::path& directory, size_t max_rows, size_t capacity, int canvas);
+    ~RecordWriter();
+    const std::set<int>& committed() const { return committed_; }
+    void enqueue(FinishedGame game);
+    void finish();
 };
 
 }

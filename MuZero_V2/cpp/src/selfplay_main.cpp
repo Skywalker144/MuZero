@@ -1,5 +1,7 @@
 #include "muzero/record.h"
 #include "muzero/torch_backend.h"
+#include "muzero/random_evaluator.h"
+#include "muzero/opening.h"
 #include <atomic>
 #include <csignal>
 #include <iostream>
@@ -8,6 +10,7 @@
 #include <ATen/Parallel.h>
 
 namespace {
+enum class EvaluatorKind { Random, Network };
 static_assert(std::atomic<bool>::is_always_lock_free);
 std::atomic<bool> interrupted{false};
 void stop(int) { interrupted.store(true, std::memory_order_relaxed); }
@@ -16,10 +19,14 @@ void stop(int) { interrupted.store(true, std::memory_order_relaxed); }
 int main(int argc, char** argv) {
     using namespace muzero;
     try {
-        if (argc != 7) throw std::runtime_error("Usage: muzero_selfplay resolved.cfg model.pt output_dir total_games seed game_offset");
+        if (argc != 8) throw std::runtime_error("Usage: muzero_selfplay resolved.cfg model.pt output_dir total_games seed game_offset random|network");
         Config config(argv[1]);
+        std::string kind(argv[7]);
+        if (kind != "random" && kind != "network") throw std::runtime_error("Invalid evaluator kind");
+        auto evaluator_kind = kind == "random" ? EvaluatorKind::Random : EvaluatorKind::Network;
         SearchConfig search_config(config);
         GameConfig game_config(config);
+        OpeningConfig opening_config(config);
         int games = std::stoi(argv[4]), offset = std::stoi(argv[6]), threads = config.integer("NUM_GAME_THREADS");
         if (games < 0 || offset < 0 || threads < 1 || config.integer("TORCH_THREADS") < 1)
             throw std::runtime_error("Invalid runtime counts");
@@ -29,9 +36,16 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, stop);
         std::signal(SIGTERM, stop);
         at::set_num_threads(config.integer("TORCH_THREADS"));
-        BatchEvaluator evaluator(std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), game_config.canvas),
-                                 config.integer("NN_MAX_BATCH_SIZE"), config.integer("NN_BATCH_WAIT_US"));
-        std::atomic<int> next{0}, completed{0};
+        std::unique_ptr<BatchEvaluator> network;
+        if (evaluator_kind == EvaluatorKind::Network)
+            network = std::make_unique<BatchEvaluator>(
+                std::make_unique<TorchBackend>(argv[2], config.text("DEVICE"), game_config.canvas),
+                config.integer("NN_MAX_BATCH_SIZE"), config.integer("NN_BATCH_WAIT_US"));
+        RecordWriter writer(directory, config.integer("SELFPLAY_ROWS_PER_SHARD"),
+                            config.integer("SELFPLAY_WRITE_QUEUE"), game_config.canvas);
+        for (int id : writer.committed())
+            if (id < offset || id >= offset + games) throw std::runtime_error("Unexpected committed game ID");
+        std::atomic<int> next{0};
         std::atomic<bool> failed{false};
         std::mutex output_mutex;
         std::exception_ptr failure;
@@ -41,11 +55,27 @@ int main(int argc, char** argv) {
                 while (!interrupted && !failed) {
                     int index = next++;
                     if (index >= games) break;
-                    auto destination = game_path(directory, index + offset);
-                    if (std::filesystem::exists(destination)) { ++completed; continue; }
-                    std::mt19937_64 random(seed + static_cast<uint64_t>(index + offset) * 0x9e3779b97f4a7c15ULL);
+                    if (writer.committed().count(index + offset)) continue;
+                    uint64_t game_seed = seed + static_cast<uint64_t>(index + offset) * 0x9e3779b97f4a7c15ULL;
+                    std::mt19937_64 random(game_seed);
                     auto [size, rule] = game_config.sample(random);
                     Game game(size, game_config.canvas, rule);
+                    std::unique_ptr<RandomEvaluator> bootstrap;
+                    if (evaluator_kind == EvaluatorKind::Random)
+                        bootstrap = std::make_unique<RandomEvaluator>(game_config.canvas, game_seed);
+                    Evaluator& evaluator = bootstrap ? static_cast<Evaluator&>(*bootstrap) : *network;
+                    OpeningResult opening;
+                    if (evaluator_kind == EvaluatorKind::Network) {
+                        opening = initialize_opening(game, opening_config, evaluator, random,
+                                                     [&] { return interrupted || failed; });
+                        if (opening.status == OpeningStatus::Interrupted) break;
+                        std::lock_guard<std::mutex> lock(output_mutex);
+                        std::cout << "game=" << index + offset << " opening_attempts=" << opening.attempts
+                                  << " balanced_moves=" << opening.balanced_moves << " policy_init_moves=" << opening.policy_moves
+                                  << " opening_value=" << opening.start_value << " opening_terminal=" << game.finished();
+                        if (!opening.failure.empty()) std::cout << " opening_failure=" << opening.failure;
+                        std::cout << '\n';
+                    }
                     Search search(search_config, evaluator, random);
                     std::vector<Step> steps;
                     while (!game.finished() && !interrupted && !failed) {
@@ -58,16 +88,7 @@ int main(int argc, char** argv) {
                         game.play(action);
                     }
                     if (!game.finished()) break;
-                    auto temporary = destination;
-                    temporary += ".tmp";
-                    RecordWriter writer(temporary);
-                    writer.game(game, steps);
-                    std::filesystem::rename(temporary, destination);
-                    int done = ++completed;
-                    std::lock_guard<std::mutex> lock(output_mutex);
-                    std::cout << "game=" << index + offset << " completed=" << done << '/' << games
-                              << " size=" << size << " rule=" << RULE_NAMES[static_cast<int>(rule)]
-                              << " rows=" << steps.size() << " winner=" << game.winner() << std::endl;
+                    writer.enqueue({index + offset, game.canvas(), size, rule, game.winner(), std::move(steps), std::move(opening.actions)});
                 }
             } catch (...) {
                 failed = true;
@@ -83,8 +104,10 @@ int main(int argc, char** argv) {
             throw;
         }
         for (auto& worker : workers) worker.join();
+        writer.finish();
         if (failure) std::rethrow_exception(failure);
-        std::cout << "nn_requests=" << evaluator.requests << " nn_batches=" << evaluator.batches << std::endl;
+        std::cout << "evaluator=" << kind << " nn_requests=" << (network ? network->requests.load() : 0)
+                  << " nn_batches=" << (network ? network->batches.load() : 0) << std::endl;
         return interrupted ? 130 : 0;
     } catch (const std::exception& error) {
         std::cerr << "selfplay: " << error.what() << std::endl;
