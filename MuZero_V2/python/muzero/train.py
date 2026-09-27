@@ -124,7 +124,7 @@ def train_iteration(model, optimizer, replay, config, iteration, device, average
             waiting = time.monotonic()
             samples = next(batches)
             data_wait_seconds += time.monotonic() - waiting
-            observations, actions, policies, values, masks = [tensor.to(device, non_blocking=True) for tensor in samples]
+            observations, actions, policies, values, masks, weights = [tensor.to(device, non_blocking=True) for tensor in samples]
             optimizer.zero_grad(set_to_none=True)
             hidden = model.representation(observations)
             policy_loss = torch.zeros((), device=device)
@@ -138,6 +138,8 @@ def train_iteration(model, optimizer, replay, config, iteration, device, average
                 else:
                     targets = values[:, step, Outcome.WIN] - values[:, step, Outcome.LOSS]
                     value_rows = F.mse_loss(model.prediction.utility(value_logits), targets, reduction='none')
+                policy_rows = policy_rows * weights[:, step]
+                value_rows = value_rows * weights[:, step]
                 sample_losses += torch.stack([policy_rows.detach(), value_rows.detach()], dim=1)
                 step_totals[step] += policy_rows.detach().mean() + config['VALUE_LOSS_SCALE'] * value_rows.detach().mean()
                 gradient_scale = 1.0 if step == 0 else 1.0 / config['UNROLL_STEPS']

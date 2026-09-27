@@ -100,7 +100,8 @@ def train_and_checkpoint(data, c, iteration, records):
         replay_started = time.monotonic()
         replay = Replay(records, c, data / 'replay' / f'{iteration:08d}.json')
         metrics['replay_load_seconds'] = time.monotonic() - replay_started
-        metrics.update(train_iteration(model, optimizer, replay, c, iteration, device, average))
+        if replay.weight_sum > 0:
+            metrics.update(train_iteration(model, optimizer, replay, c, iteration, device, average))
         metrics['replay_rows'] = replay.rows
         metrics['replay_groups'] = game_statistics(replay.records, replay.games)
     metrics['train_seconds'] = time.monotonic() - started

@@ -18,7 +18,7 @@ class OpeningTests(unittest.TestCase):
         self.assertEqual(c['BALANCED_OPENING_MAX_TRIES'], 20)
         self.assertEqual(c['POLICY_INIT_AVG_MOVE_NUM'], 6)
         self.assertEqual(c['POLICY_INIT_TEMPERATURE'], 1.6)
-        original = load_config(ROOT / 'configs/muzero', environ={})
+        original = load_config(ROOT / 'configs/exp_muzero', environ={})
         self.assertEqual(original['BALANCED_OPENING_PROB'], 0)
         self.assertFalse(original['INIT_GAMES_WITH_POLICY'])
         for key, value in [('BALANCED_OPENING_PROB', '1.1'), ('BALANCED_OPENING_MAX_TRIES', '0'),
@@ -41,7 +41,7 @@ class OpeningTests(unittest.TestCase):
             self.assertEqual(game[0]['observation'][:2].sum(), 3)
             replay = Replay([record], c)
             for seed in range(20):
-                obs, actions, policies, values, masks = replay.sample(np.random.default_rng(seed))
+                obs, actions, policies, values, masks, weights = replay.sample(np.random.default_rng(seed))
                 self.assertGreaterEqual(obs[0, :2].sum(), 3)
                 black = bool(obs[0, Plane.BLACK_TO_MOVE, 0, 0])
                 np.testing.assert_array_equal(values[0, 0], [1, 0, 0] if black else [0, 0, 1])

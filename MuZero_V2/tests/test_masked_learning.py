@@ -32,7 +32,7 @@ class MaskedLearningTests(unittest.TestCase):
                     write_game(path, size, 9, rule)
                     records.append(read_shard(path, 9)[0])
             replay = Replay(records, c)
-            obs, actions, policies, _, _ = replay.sample(np.random.default_rng(0))
+            obs, actions, policies, _, _, _ = replay.sample(np.random.default_rng(0))
             self.assertEqual(obs.shape, (4, INPUT_PLANES, 9, 9))
             on_board = obs[:, Plane.ON_BOARD].reshape(4, 81)
             self.assertTrue((policies * (1 - on_board[:, None, None])).sum() == 0)

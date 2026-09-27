@@ -100,7 +100,7 @@ class GameRecord:
             board.flat[action] = player
         legal = placement_mask(data['observation']).reshape(self.rows, n)
         if (not np.isin(data['observation'], [0, 1]).all()
-                or not np.isin(data['weight'], [0, 1]).all() or (data['visits'] < 1).any()
+                or not np.isfinite(data['weight']).all() or (data['weight'] < 0).any() or (data['visits'] < 1).any()
                 or not np.isfinite(data['policy']).all() or (data['policy'] < 0).any()
                 or not np.allclose(data['policy'].sum(1), 1, atol=1e-5)
                 or (data['policy'][~legal] != 0).any()):
@@ -208,6 +208,9 @@ class Replay:
         self.games = [record.load() for record in self.records]
         self.ends = np.cumsum([len(game) for game in self.games])
         self.rows = rows
+        row_weights = np.concatenate([game['weight'] for game in self.games]) if self.games else np.empty(0)
+        self.weight_ends = np.cumsum(row_weights, dtype=np.float64)
+        self.weight_sum = float(self.weight_ends[-1]) if len(self.weight_ends) else 0.0
 
     def sample(self, rng):
         c = self.config
@@ -220,7 +223,11 @@ class Replay:
         policies = np.zeros((b, k + 1, heads, n), dtype=np.float32)
         values = np.zeros((b, k + 1, len(Outcome)), dtype=np.float32)
         masks = np.zeros((b, k + 1, heads), dtype=np.float32)
-        for batch, position in enumerate(rng.integers(self.rows, size=b)):
+        weights = np.ones((b, k + 1), dtype=np.float32)
+        if self.weight_sum <= 0:
+            raise ValueError('Replay has no positive training weights')
+        positions = np.searchsorted(self.weight_ends, rng.random(b) * self.weight_sum, side='right')
+        for batch, position in enumerate(positions):
             index = int(np.searchsorted(self.ends, position, side='right'))
             start = int(position - (self.ends[index - 1] if index else 0))
             game, record = self.games[index], self.records[index]
@@ -232,26 +239,28 @@ class Replay:
                 values[batch, step, Outcome.WIN if outcome > 0 else Outcome.LOSS if outcome < 0 else Outcome.DRAW] = 1
                 if row >= len(game):
                     continue
+                if step > 0:
+                    weights[batch, step] = game[row]['weight'] * self.rows / self.weight_sum
                 if step < k:
                     actions[batch, step] = game[row]['action']
                 if not c['AUXILIARY_POLICY_HEADS']:
                     policies[batch, step, PolicyHead.MAIN] = game[row]['policy']
-                    masks[batch, step, PolicyHead.MAIN] = game[row]['weight']
+                    masks[batch, step, PolicyHead.MAIN] = 1
                     continue
                 for offset, main, soft in ((0, PolicyHead.MAIN, PolicyHead.SOFT), (1, PolicyHead.OPPONENT, PolicyHead.SOFT_OPPONENT)):
                     target_row = row + offset
                     if target_row >= len(game):
                         continue
                     target = game[target_row]
-                    legal = placement_mask(target['observation']).reshape(n)
+                    legal = target['observation'][Plane.ON_BOARD].reshape(n) != 0
                     softened = np.zeros(n, dtype=np.float32)
                     softened[legal] = (target['policy'][legal] + c['SOFT_POLICY_EPS']) ** (1 / c['SOFT_POLICY_TEMPERATURE'])
                     policies[batch, step, main] = target['policy']
                     policies[batch, step, soft] = softened / softened.sum()
-                    masks[batch, step, [main, soft]] = target['weight']
+                    masks[batch, step, [main, soft]] = 1
         if c['SYMMETRY_AUGMENTATION']:
             observations, actions, policies = augment(observations, actions, policies, rng)
-        return observations, actions, policies, values, masks
+        return observations, actions, policies, values, masks, weights
 
 
 def augment(observations, actions, policies, rng):

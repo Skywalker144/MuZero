@@ -16,7 +16,7 @@ from muzero.replay import read_shard, Replay, augment, window_size
 from muzero.train import WeightAverage, create_model, create_optimizer, export_model, load_checkpoint, save_checkpoint, train_iteration
 
 
-def write_game(path, size=5, canvas=5, rule=Rule.FREESTYLE, opening_count=0):
+def write_game(path, size=5, canvas=5, rule=Rule.FREESTYLE, opening_count=0, weights=None):
     board = np.zeros((canvas, canvas), dtype=np.int8)
     on_board = np.zeros_like(board, dtype=bool)
     on_board[:size, :size] = True
@@ -38,7 +38,7 @@ def write_game(path, size=5, canvas=5, rule=Rule.FREESTYLE, opening_count=0):
             observation[Plane.RENJU] = on_board & (rule == Rule.RENJU)
             legal = (board == 0) & on_board
             policy = legal.astype(np.float32) / legal.sum()
-            stream.write(struct.pack('<iIfI', player, action, float(turn % 2 == 0), 4))
+            stream.write(struct.pack('<iIfI', player, action, float(turn % 2 == 0) if weights is None else weights[turn], 4))
             stream.write(np.packbits(observation.reshape(-1)).tobytes())
             stream.write(policy.astype('<f4').tobytes())
             board.flat[action] = player
@@ -127,7 +127,7 @@ class LearningTests(unittest.TestCase):
             record = read_shard(path, 5)[0]
             replay = Replay([record], c)
             samples = replay.sample(np.random.default_rng(2))
-            observations, actions, policies, values, masks = samples
+            observations, actions, policies, values, masks, weights = samples
             np.testing.assert_allclose(values.sum(-1), 1)
             self.assertTrue((masks[:, -1] == 0).all())
             self.assertTrue((policies[:, -1] == 0).all())
@@ -135,8 +135,8 @@ class LearningTests(unittest.TestCase):
                 start = int(observations[row, :2].sum())
                 for step in range(c['UNROLL_STEPS'] + 1):
                     current = start + step
-                    main = float(current < 9 and current % 2 == 0)
-                    opponent = float(current + 1 < 9 and (current + 1) % 2 == 0)
+                    main = float(current < 9)
+                    opponent = float(current + 1 < 9)
                     np.testing.assert_array_equal(masks[row, step], [main, main, opponent, opponent])
                 for step in range(1, c['UNROLL_STEPS'] + 1):
                     np.testing.assert_array_equal(values[row, step], values[row, step - 1][::-1])
@@ -180,7 +180,7 @@ class LearningTests(unittest.TestCase):
                     self.assertAlmostEqual(result['grad_norms'][name], squared ** .5, places=5)
 
     def test_scalar_single_head_training_and_export(self):
-        c = load_config(ROOT / 'configs/muzero', environ={
+        c = load_config(ROOT / 'configs/exp_muzero', environ={
             'BOARD_SIZES': '5', 'BOARD_SIZE_WEIGHTS': '1', 'BATCH_SIZE': '4', 'TRAIN_STEPS': '1',
             'HIDDEN_STATE_NUM_CHANNELS': '16', 'REPRESENTATION_NUM_CHANNELS': '16',
             'DYNAMICS_NUM_CHANNELS': '16', 'PREDICTION_BACKBONE_NUM_CHANNELS': '16',
