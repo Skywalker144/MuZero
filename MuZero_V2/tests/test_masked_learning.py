@@ -8,8 +8,8 @@ import torch
 from muzero.config import ROOT, load_config
 from muzero.network import InferenceModule
 from muzero.protocol import INPUT_PLANES, Plane, Rule
-from muzero.replay import GameRecord, Replay, augment, placement_mask
-from muzero.train import create_model, create_optimizer, export_model, train_iteration
+from muzero.replay import read_shard, Replay, augment, placement_mask
+from muzero.train import WeightAverage, create_model, create_optimizer, export_model, train_iteration
 from test_learning import write_game
 
 
@@ -28,9 +28,9 @@ class MaskedLearningTests(unittest.TestCase):
             records = []
             for size in c['BOARD_SIZES']:
                 for rule in Rule:
-                    path = Path(tmp) / f'{size}_{rule.name}.mzg'
+                    path = Path(tmp) / f'{size}_{rule.name}.mzs'
                     write_game(path, size, 9, rule)
-                    records.append(GameRecord.inspect(path, 9))
+                    records.append(read_shard(path, 9)[0])
             replay = Replay(records, c)
             obs, actions, policies, _, _ = replay.sample(np.random.default_rng(0))
             self.assertEqual(obs.shape, (4, INPUT_PLANES, 9, 9))
@@ -38,7 +38,7 @@ class MaskedLearningTests(unittest.TestCase):
             self.assertTrue((policies * (1 - on_board[:, None, None])).sum() == 0)
             self.assertTrue(on_board[np.arange(4)[:, None], actions].all())
             model = create_model(c)
-            metrics = train_iteration(model, create_optimizer(model, c), replay, c, 0, 'cpu')
+            metrics = train_iteration(model, create_optimizer(model, c), replay, c, 0, 'cpu', WeightAverage(model, c))
             self.assertTrue(np.isfinite(metrics['loss']))
             export = Path(tmp) / 'model.pt'
             export_model(model, export)
@@ -73,9 +73,9 @@ class MaskedLearningTests(unittest.TestCase):
 
     def test_symmetry_and_record_rejection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'game.mzg'
+            path = Path(tmp) / 'game.mzs'
             write_game(path, 5, 9, Rule.STANDARD)
-            record = GameRecord.inspect(path, 9)
+            record = read_shard(path, 9)[0]
             data = record.load()
             obs = data['observation'][:8].astype(np.float32)
             actions = data['action'][:8, None].astype(np.int64)
@@ -86,9 +86,9 @@ class MaskedLearningTests(unittest.TestCase):
             self.assertTrue((targets[:, 0, 0][~legal] == 0).all())
             self.assertTrue((transformed[:, Plane.STANDARD] == transformed[:, Plane.ON_BOARD]).all())
             with self.assertRaises(ValueError):
-                GameRecord.inspect(path, 5)
+                read_shard(path, 5)[0]
             raw = bytearray(path.read_bytes())
             raw[:8] = b'MZV2GAME'
             path.write_bytes(raw)
             with self.assertRaises(ValueError):
-                GameRecord.inspect(path, 9)
+                read_shard(path, 9)[0]
