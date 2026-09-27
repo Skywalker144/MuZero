@@ -6,14 +6,16 @@ import re
 from pathlib import Path
 
 if __package__:
+    from .model_config import MODEL_INT_KEYS, MODEL_KEYS
     from .protocol import SPEC, VERSION
 else:
+    from model_config import MODEL_INT_KEYS, MODEL_KEYS
     from protocol import SPEC, VERSION
 
 ROOT = Path(__file__).resolve().parents[2]
 FILE_SECTIONS = {
     'env.cfg': ('env',),
-    'selfplay.cfg': ('selfplay', 'search', 'noise', 'fpu', 'lcb', 'temperature'),
+    'selfplay.cfg': ('selfplay', 'opening', 'search', 'noise', 'fpu', 'lcb', 'temperature'),
     'net.cfg': ('model',),
     'train.cfg': ('parallel', 'training', 'optimizer', 'loss', 'replay'),
     'run.cfg': ('run',),
@@ -22,22 +24,24 @@ CONFIG_FILES = tuple(FILE_SECTIONS)
 GROUPS = {
     'run': 'SEED DEVICE MAX_ITERS MAX_TIME_SECONDS DATA_DIR INIT_MODEL'.split(),
     'env': 'BOARD_SIZES BOARD_SIZE_WEIGHTS RULES RULE_WEIGHTS'.split(),
-    'model': 'NUM_BLOCKS NUM_CHANNELS VALUE_HEAD AUXILIARY_POLICY_HEADS'.split(),
+    'model': MODEL_KEYS,
     'parallel': 'TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US'.split(),
-    'selfplay': 'SELFPLAY_SCHEDULE GAMES_PER_ITER BOOTSTRAP_GAMES BACKFILL_FACTOR'.split(),
+    'selfplay': 'BOOTSTRAP_EVALUATOR SELFPLAY_SCHEDULE GAMES_PER_ITER BOOTSTRAP_GAMES BACKFILL_FACTOR SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE'.split(),
+    'opening': 'BALANCED_OPENING_PROB BALANCED_OPENING_MAX_TRIES BALANCED_OPENING_AVG_DIST_FACTOR BALANCED_OPENING_BALANCE_EXPONENT BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY POLICY_INIT_AVG_MOVE_NUM POLICY_INIT_TEMPERATURE'.split(),
     'search': 'FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS CHEAP_SEARCH_PROB PB_C_INIT PB_C_BASE'.split(),
     'noise': 'DIRICHLET_TOTAL_CONCENTRATION DIRICHLET_NOISE_WEIGHT SHAPED_DIRICHLET_NOISE'.split(),
     'fpu': 'USE_FPU FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX FPU_PARENT_WEIGHT_BY_VISITED_POLICY_POW'.split(),
     'lcb': 'USE_LCB_FOR_SELECTION LCB_STDEVS MIN_VISIT_PROP_FOR_LCB'.split(),
     'temperature': 'MOVE_TEMPERATURE_SCHEDULE TEMPERATURE_MOVES CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE CHOSEN_MOVE_TEMPERATURE_HALFLIFE ROOT_POLICY_TEMPERATURE_EARLY ROOT_POLICY_TEMPERATURE'.split(),
-    'training': 'BATCH_SIZE TRAIN_STEPS UNROLL_STEPS HIDDEN_GRADIENT_SCALE SYMMETRY_AUGMENTATION'.split(),
+    'training': 'BATCH_SIZE TRAIN_STEPS UNROLL_STEPS HIDDEN_GRADIENT_SCALE SYMMETRY_AUGMENTATION BATCH_PREFETCH EMA_HALFLIFE_SAMPLES'.split(),
     'optimizer': 'LR WEIGHT_DECAY ADAM_BETA1 ADAM_BETA2 ADAM_EPS'.split(),
     'loss': 'VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE SOFT_POLICY_TEMPERATURE SOFT_POLICY_EPS'.split(),
     'replay': 'REPLAY_RATIO REPLAY_WINDOW FIXED_WINDOW_ROWS MIN_ROWS MAX_ROWS TAPER_WINDOW_EXPONENT EXPAND_WINDOW_PER_ROW'.split(),
 }
-INT_KEYS = set('NUM_BLOCKS NUM_CHANNELS SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER'.split())
-BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU'.split())
-STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE'.split())
+INT_KEYS = MODEL_INT_KEYS | set('SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE BATCH_PREFETCH'.split())
+INT_KEYS.add('BALANCED_OPENING_MAX_TRIES')
+BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY'.split())
+STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE BOOTSTRAP_EVALUATOR'.split())
 KEYS = {key for group in GROUPS.values() for key in group}
 LIST_KEYS = {'BOARD_SIZES': int, 'BOARD_SIZE_WEIGHTS': float, 'RULES': str, 'RULE_WEIGHTS': float}
 FLOAT_KEYS = KEYS - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
@@ -101,18 +105,26 @@ def config_chain(directory, seen=None):
 
 
 def validate(c):
-    nonnegative = set('TEMPERATURE_MOVES SEED NUM_BLOCKS NN_BATCH_WAIT_US UNROLL_STEPS MAX_ROWS MAX_ITERS MAX_TIME_SECONDS'.split())
+    nonnegative = set('TEMPERATURE_MOVES SEED NN_BATCH_WAIT_US UNROLL_STEPS MAX_ROWS MAX_ITERS MAX_TIME_SECONDS'.split())
+    nonnegative.update(key for key in MODEL_INT_KEYS if key.endswith('_NUM_BLOCKS'))
     for key in INT_KEYS:
         if c[key] < (0 if key in nonnegative else 1):
             raise ValueError(f'{key} out of range')
     zero_allowed = set('CHEAP_SEARCH_PROB PB_C_INIT DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX WEIGHT_DECAY VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE HIDDEN_GRADIENT_SCALE ADAM_BETA1 ADAM_BETA2'.split())
+    zero_allowed.update('BALANCED_OPENING_PROB BALANCED_OPENING_AVG_DIST_FACTOR BALANCED_OPENING_BALANCE_EXPONENT BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK POLICY_INIT_AVG_MOVE_NUM'.split())
     for key in FLOAT_KEYS:
         value = c[key]
         if not math.isfinite(value) or value < 0 or (value == 0 and key not in zero_allowed):
             raise ValueError(f'{key} out of range')
-    for key in 'CHEAP_SEARCH_PROB DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB HIDDEN_GRADIENT_SCALE'.split():
+    for key in 'CHEAP_SEARCH_PROB DIRICHLET_NOISE_WEIGHT MIN_VISIT_PROP_FOR_LCB HIDDEN_GRADIENT_SCALE BALANCED_OPENING_PROB BALANCED_OPENING_REJECTION_PROB BALANCED_OPENING_REJECTION_PROB_FALLBACK'.split():
         if c[key] > 1:
             raise ValueError(f'{key} must be <= 1')
+    for key, maximum in [('BALANCED_OPENING_MAX_TRIES', 1000), ('BALANCED_OPENING_AVG_DIST_FACTOR', 100),
+                         ('BALANCED_OPENING_BALANCE_EXPONENT', 100), ('POLICY_INIT_AVG_MOVE_NUM', 100)]:
+        if c[key] > maximum:
+            raise ValueError(f'{key} must be <= {maximum}')
+    if not 0.1 <= c['POLICY_INIT_TEMPERATURE'] <= 5:
+        raise ValueError('POLICY_INIT_TEMPERATURE must be 0.1..5')
     if c['ADAM_BETA1'] >= 1 or c['ADAM_BETA2'] >= 1:
         raise ValueError('Adam betas must be < 1')
     for values_key, weights_key in (('BOARD_SIZES', 'BOARD_SIZE_WEIGHTS'), ('RULES', 'RULE_WEIGHTS')):
@@ -121,8 +133,8 @@ def validate(c):
             raise ValueError(f'{values_key} and {weights_key} must be unique, nonempty and aligned')
         if any(not math.isfinite(w) or w < 0 for w in weights) or not math.isfinite(sum(weights)) or sum(weights) <= 0:
             raise ValueError(f'{weights_key} must be finite, nonnegative and have positive total')
-    if any(size < 5 or size > 25 for size in c['BOARD_SIZES']) or c['NUM_CHANNELS'] < 2:
-        raise ValueError('Board sizes must be 5..25 and NUM_CHANNELS >=2')
+    if any(size < 5 or size > 25 for size in c['BOARD_SIZES']):
+        raise ValueError('Board sizes must be 5..25')
     if any(rule not in SPEC['rules'] for rule in c['RULES']):
         raise ValueError('Unknown Gomoku rule')
     if c['MAX_ROWS'] and c['MAX_ROWS'] < max(c['MIN_ROWS'], c['BATCH_SIZE']):
@@ -132,6 +144,7 @@ def validate(c):
     if not re.fullmatch(r'cpu|cuda(?::[0-9]+)?', c['DEVICE']):
         raise ValueError('DEVICE must be cpu or cuda[:index]')
     for key, choices in {
+        'BOOTSTRAP_EVALUATOR': {'random', 'network'},
         'VALUE_HEAD': {'scalar', 'wdl'},
         'MOVE_TEMPERATURE_SCHEDULE': {'exponential', 'threshold'},
         'REPLAY_WINDOW': {'power_law', 'fixed'},
@@ -223,7 +236,7 @@ def render_native_config(config):
 
 
 def model_identity(c):
-    return {'PROTOCOL_VERSION': VERSION} | {key: c[key] for key in ('CANVAS_SIZE', 'NUM_BLOCKS', 'NUM_CHANNELS', 'VALUE_HEAD', 'AUXILIARY_POLICY_HEADS')}
+    return {'PROTOCOL_VERSION': VERSION} | {key: c[key] for key in ('CANVAS_SIZE', *MODEL_KEYS)}
 
 
 if __name__ == '__main__':
