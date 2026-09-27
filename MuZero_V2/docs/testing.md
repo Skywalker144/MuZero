@@ -33,6 +33,10 @@ CONFIG_DIR=configs/minimal_test DATA_DIR=data/smoke bash scripts/run.sh
 - [test_native_backend.py](../tests/test_native_backend.py)、[torch_backend_test.cpp](../cpp/tests/torch_backend_test.cpp)：真实 TorchScript 数值对照、混合请求、动态 batch 及 latent 存储独立性；`MUZERO_TEST_DEVICE` 选择 CPU 或 CUDA。
 - [random_evaluator_test.cpp](../cpp/tests/random_evaluator_test.cpp)：随机状态递归、可复现性、输出范围及真实搜索掩码。
 - [test_config.py](../tests/test_config.py)：配置继承、覆盖、循环、非法参数。
+- [test_eval_config.py](../tests/test_eval_config.py)：评估配置继承、环境隔离、往返与参数校验。
+- [search_parallel_test.cpp](../cpp/tests/search_parallel_test.cpp)：真实批量队列下的共享树预算、唯一扩展、取消、推理异常、虚拟损失与 LCB 选点。
+- [test_native_eval.py](../tests/test_native_eval.py)：真实模型的 CUDA 评估、画布映射、候选排名和非法棋谱。
+- [eval_session_test.cpp](../cpp/tests/eval_session_test.cpp)：对弈会话、画布转换、悔棋与终局；HTTP 和浏览器验证见 [Web UI](../../web/README.md)。
 - [test_pipeline.py](../tests/test_pipeline.py)：产量计划、原子状态、独占锁、实验隔离。
 - [test_bootstrap.py](../tests/test_bootstrap.py)：训练步数持久化、共享随机初始化和预训练来源。
 - [test_native_bootstrap.py](../tests/test_native_bootstrap.py)：无网络冷启动、首次训练切换、冷启动后采集预算与中断恢复、导出失败恢复、跨线程对局恢复及预训练模型；`MUZERO_TEST_DEVICE` 指定训练和网络推理设备。
@@ -48,6 +52,15 @@ CONFIG_DIR=configs/minimal_test DATA_DIR=data/smoke bash scripts/run.sh
 cmake -S cpp -B build/core -DMUZERO_WITH_TORCH=OFF
 cmake --build build/core --parallel 2
 ctest --test-dir build/core --output-on-failure
+```
+
+评估定向验证：
+
+```bash
+PYTHONPATH=python python3 -m unittest discover -s tests -p '*config.py'
+ctest --test-dir build/core -R '^(core|search_parallel|random_evaluator)$' --output-on-failure
+MUZERO_TEST_EVAL_BINARY="$PWD/build/muzero_eval" MUZERO_TEST_DEVICE=cuda:0 PYTHONPATH=python \
+  python3 -m unittest discover -s tests -p 'test_native_eval.py'
 ```
 
 开局的定向验证与 SkyZero 源码对照：
@@ -72,3 +85,13 @@ PYTHONPATH=python python3 -m muzero.benchmark \
 ```
 
 入口及参数由 [benchmark.py](../python/muzero/benchmark.py) 定义。使用真实棋规、MCTS 和 LibTorch；每个线程先完成一次完整搜索预热，再对固定空棋盘重复搜索。JSONL 保存配置、模型和可执行文件哈希、吞吐及 initial/recurrent 实际 batch 分布。`seconds` 排除模型加载和预热，`backend_seconds` 是推理服务的主机耗时，不等同于 GPU 活跃时间。该负载用于比较搜索吞吐，不代表完整训练或对局产量；对照实验需使用相同模型、搜索预算和空闲 GPU。
+
+KataGo 对齐验证：
+
+```bash
+conda run -n pytorch python scripts/verify_alignment.py --source /home/sky/RL/SkyZero/SkyZero_V8.1
+PYTHONPATH=python conda run -n pytorch python -m unittest discover -s tests -p 'test_alignment.py'
+conda run -n pytorch ctest --test-dir build -R '^(alignment|core|search_parallel)$' --output-on-failure
+```
+
+[verify_alignment.py](../scripts/verify_alignment.py) 直接抽取指定源码的策略与 WDL 损失函数验证数值和梯度，并对照噪声分布、surprise 行权重和访问权重反解函数；[alignment_test.cpp](../cpp/tests/alignment_test.cpp) 覆盖根强制探索与搜索目标；[test_alignment.py](../tests/test_alignment.py) 覆盖损失系数、行采样与 soft 目标。
