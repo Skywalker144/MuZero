@@ -24,27 +24,30 @@ public:
     int turn() const { return turn_; }
     int winner() const { return winner_; }
     bool finished() const { return finished_; }
+    const Board& board() const { return board_; }
     bool on_board(int action) const {
         return action >= 0 && action < actions() && action / canvas_ < size() && action % canvas_ < size();
     }
     bool legal(int action) const {
         return !finished_ && on_board(action) && board_.cells[action / canvas_ * size() + action % canvas_] == 0;
     }
-    std::vector<float> observation() const {
+    std::vector<float> observation() const { return observation(player_); }
+    std::vector<float> observation(int player) const {
+        if (player != 1 && player != -1) throw std::runtime_error("Invalid observation player");
         std::vector<float> result(INPUT_PLANES * actions());
         RenjuAnalyzer analyzer;
         for (int y = 0; y < size(); ++y) {
             for (int x = 0; x < size(); ++x) {
                 int local = y * size() + x, action = y * canvas_ + x;
                 auto set = [&](Plane plane, bool value) { result[static_cast<int>(plane) * actions() + action] = value; };
-                set(Plane::OWN, board_.cells[local] == player_);
-                set(Plane::OPPONENT, board_.cells[local] == -player_);
-                set(Plane::BLACK_TO_MOVE, player_ == 1);
+                set(Plane::OWN, board_.cells[local] == player);
+                set(Plane::OPPONENT, board_.cells[local] == -player);
+                set(Plane::BLACK_TO_MOVE, player == 1);
                 set(Plane::ON_BOARD, true);
                 set(Plane::STANDARD, rule_ == Rule::STANDARD);
                 set(Plane::RENJU, rule_ == Rule::RENJU);
                 if (rule_ == Rule::RENJU)
-                    set(player_ == 1 ? Plane::FORBIDDEN_BLACK_TURN : Plane::FORBIDDEN_WHITE_TURN,
+                    set(player == 1 ? Plane::FORBIDDEN_BLACK_TURN : Plane::FORBIDDEN_WHITE_TURN,
                         analyzer.forbidden(board_, local));
             }
         }
