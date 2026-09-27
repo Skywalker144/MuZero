@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f3ed">
+  <title>MuZero · 对弈室</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="header">
+      <a class="brand" href="/" aria-label="MuZero 对弈室"><span class="brand-mark">m<span>z</span></span><span>MuZero <small>对弈室</small></span></a>
+      <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection">连接中</span><span class="local-tag">LOCAL PLAY</span></div>
+    </header>
+    <main>
+      <section class="play-area" aria-label="对弈棋盘">
+        <div class="section-heading"><div><p class="eyebrow">HUMAN × MUZERO</p><h1>落子，看看下一步。</h1></div><span id="rule-badge" class="pill">自由五子棋</span></div>
+        <div class="board-card">
+          <div class="players">
+            <div class="player"><span id="human-stone" class="player-stone black"></span><div><strong>你</strong><small id="human-label">执黑 · 先行</small></div></div>
+            <div class="turn-info"><span id="status-dot" class="dot"></span><span id="status" role="status" aria-live="polite">选择模型，开始一局</span></div>
+            <div class="player ai"><div><strong>MuZero</strong><small id="ai-label">执白 · 后行</small></div><span id="ai-stone" class="player-stone white"></span></div>
+          </div>
+          <div class="board-surround"><div id="board" class="board" role="group" aria-label="五子棋棋盘"></div></div>
+          <div class="board-footer"><span id="move-count">第 0 手</span><label class="check"><input id="numbers" type="checkbox" checked> 显示手数</label><button id="undo" class="text-button" disabled>↶ 悔棋</button></div>
+        </div>
+        <div id="error" class="error" role="alert" hidden></div>
+        <div class="history-panel"><div class="history-heading"><span>对局记录</span><small id="history-count">尚未落子</small></div><div id="history" class="history"><span class="empty-inline">每一步，都从这里开始。</span></div></div>
+        <p id="rule-note" class="footnote">自由规则下，五子或长连均获胜。</p>
+        <details id="heatmaps" class="heatmaps" open>
+          <summary><span>策略热力图</span><span id="heatmap-position">等待 AI 搜索</span></summary>
+          <div class="heatmap-content">
+            <p id="heatmap-empty" class="footnote">AI 落子后，在这里对照网络先验与搜索结果。</p>
+            <div id="heatmap-data" hidden>
+              <div class="heatmap-pair">
+                <section><div class="heatmap-heading"><h3>神经网络先验</h3><span>概率 %</span></div><div id="prior-map" class="heat-grid" role="group" aria-label="神经网络先验热力图"></div><div class="heat-legend"><span>0</span><i></i><span id="prior-max"></span></div></section>
+                <section><div class="heatmap-heading"><label for="search-map-kind">搜索结果</label><select id="search-map-kind"><option value="visit_policy">访问分布</option><option value="selection_weight">LCB 选择权重</option></select></div><div id="search-map" class="heat-grid" role="group" aria-label="搜索结果热力图"></div><div class="heat-legend"><span>0</span><i></i><span id="search-max"></span></div></section>
+              </div>
+              <p id="heatmap-detail" class="heatmap-detail" aria-live="polite">悬停或聚焦点位，查看数值；描边标记 AI 的实际落点。</p>
+              <p class="footnote">两图均为 AI 落子前的局面。先验在合法点上归一化，未加根温度和噪声；颜色分别按各图最大值线性缩放，格内数值为实际百分比。</p>
+            </div>
+          </div>
+        </details>
+      </section>
+      <aside>
+        <section class="panel settings"><div class="panel-heading"><h2>开始对弈</h2><span class="mini-label">NEW GAME</span></div>
+          <form id="settings">
+            <label class="field">对弈模型<select id="model" required></select></label>
+            <div class="field-row"><label class="field">棋盘<select id="size"></select></label><label class="field">棋规<select id="rule"></select></label></div>
+            <fieldset><legend>我的执子</legend><div class="side-switch"><label><input type="radio" name="human" value="1" checked><span><i class="tiny-stone black"></i> 执黑先行</span></label><label><input type="radio" name="human" value="-1"><span><i class="tiny-stone white"></i> 执白后行</span></label></div></fieldset>
+            <label class="field">每步搜索次数<input id="visits" type="number" min="1" max="100000" step="1" value="400" required><small>增加搜索次数，让模型思考得更充分。</small></label>
+            <button id="new-game" class="primary" type="submit">开始新局 <span>↗</span></button>
+          </form>
+          <button id="retry" class="secondary" hidden>重试 AI 落子</button>
+          <p id="engine-info" class="engine-info">共享树搜索 · 模型常驻</p>
+        </section>
+        <section class="panel analysis"><div class="panel-heading"><h2>AI 上一手评估</h2><span id="analysis-move" class="mini-label">—</span></div>
+          <div id="analysis-empty" class="empty-state"><div class="empty-symbol">◌</div><p>等待模型落子</p><small>这里会显示思考耗时、局面估值<br>以及模型考虑的候选点。</small></div>
+          <div id="analysis-data" hidden>
+            <div class="metrics"><div><small>思考耗时</small><strong id="seconds">—</strong></div><div><small>完成搜索</small><strong id="completed">—</strong></div></div>
+            <div class="value-heading"><span id="value-label">局面估值</span><strong id="value">—</strong></div><div class="value-track"><div id="value-fill"></div><i></i></div><div class="value-legend"><span>不利 −1</span><span>有利 +1</span></div>
+            <table><thead><tr><th>候选点</th><th>访问</th><th>选择权重</th></tr></thead><tbody id="candidates"></tbody></table>
+            <p class="analysis-note">按 LCB 修正后的权重排名。估值来自 AI 落子前的局面，不代表校准后的胜率。</p>
+          </div>
+        </section>
+      </aside>
+    </main>
+    <footer class="page-footer"><span>MuZero V2</span><span>一步一步，与模型过招。</span></footer>
+  </div>
+</body>
+</html>
