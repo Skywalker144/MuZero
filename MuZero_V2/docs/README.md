@@ -2,15 +2,18 @@
 
 - 使用与运行入口：[README](../README.md)。
 - 默认参数与配置解析：[baseline](../configs/baseline)、[config.py](../python/muzero/config.py)。
-- 原始棋类 MuZero 预设：[muzero](../configs/muzero)；11×11 实验基线：[exp_baseline](../configs/exp_baseline)。
-- 多尺寸预设：[exp_baseline](../configs/exp_baseline/env.cfg)；混合规则通过配置中的 `RULES` 与 `RULE_WEIGHTS` 设置。
+- 原始棋类 MuZero 预设：[exp_muzero](../configs/exp_muzero)；15×15 至 11×11 混合尺寸实验基线：[exp_baseline](../configs/exp_baseline)。
+- 多尺寸配置：[baseline/env.cfg](../configs/baseline/env.cfg)；混合规则通过配置中的 `RULES` 与 `RULE_WEIGHTS` 设置。
 - 输入通道、规则编号与产物版本唯一来源：[protocol.json](../protocol.json)；C++ 头由 [generate_protocol.py](../scripts/generate_protocol.py) 生成。
 - Renju 判定：[rules.cpp](../cpp/src/rules.cpp)，递归活三判定改编自 SkyZero V8.1 的 `katago/cpp/game/renju.cpp`。
 - 真实棋规与观测：[game.h](../cpp/include/muzero/game.h)。
 - MuZero 搜索、FPU、根噪声与 LCB：[search.cpp](../cpp/src/search.cpp)。
+- 评估配置与树并行：[eval.cfg](../configs/baseline/eval.cfg)、[search.h](../cpp/include/muzero/search.h)；命令行评估：[evaluate.py](../python/muzero/evaluate.py)、[eval_main.cpp](../cpp/src/eval_main.cpp)。
+- 浏览器对弈与常驻模型会话：[Web UI](../../web/README.md)、[eval_session.h](../cpp/include/muzero/eval_session.h)、[engine.py](../python/muzero/engine.py)。
 - 对局线程与共享推理队列：[selfplay_main.cpp](../cpp/src/selfplay_main.cpp)、[batcher.cpp](../cpp/src/batcher.cpp)、[torch_backend.cpp](../cpp/src/torch_backend.cpp)。
 - 平衡开局与 policy init：[opening.h](../cpp/include/muzero/opening.h)、[opening.cpp](../cpp/src/opening.cpp)；配置入口为 [selfplay.cfg](../configs/baseline/selfplay.cfg) 的 `[opening]`；SkyZero 源码对照入口为 [verify_opening.py](../scripts/verify_opening.py)。
 - 随机冷启动评估器：[random_evaluator.cpp](../cpp/src/random_evaluator.cpp)；训练进度与模型切换：[train.py](../python/muzero/train.py)、[run.py](../python/muzero/run.py)。
+- KataGo 算法对照：[verify_alignment.py](../scripts/verify_alignment.py)、[test_alignment.py](../tests/test_alignment.py)；自对弈行权重：[training_targets.cpp](../cpp/src/training_targets.cpp)。
 - 网络结构配置：[net.cfg](../configs/baseline/net.cfg)、[model_config.py](../python/muzero/model_config.py)；网络与 TorchScript：[network.py](../python/muzero/network.py)、[train.py](../python/muzero/train.py)。
 - 完整轨迹分片、异步写入与恢复：[record.h](../cpp/include/muzero/record.h)、[record.cpp](../cpp/src/record.cpp)；回放窗口、快照与展开目标：[replay.py](../python/muzero/replay.py)。
 - 批次预取：[prefetch.py](../python/muzero/prefetch.py)；EMA 状态与推理模型发布：[train.py](../python/muzero/train.py)、[run.py](../python/muzero/run.py)。
