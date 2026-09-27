@@ -55,7 +55,7 @@ def experiment_plan(directory, environ=None):
 
 def prepare_initializations(work, arms):
     import torch
-    from .train import create_model, seed_all
+    from .train import create_model, seed_all, WeightAverage
     for arm in arms:
         config = arm['config']
         if config['INIT_MODEL']:
@@ -67,7 +67,8 @@ def prepare_initializations(work, arms):
             seed_all(config['SEED'])
             model = create_model(config)
             with atomic_path(destination) as temporary:
-                torch.save({'protocol_version': VERSION, 'identity': identity, 'model': model.state_dict()}, temporary)
+                torch.save({'protocol_version': VERSION, 'identity': identity, 'model': model.state_dict(),
+                            'training_steps': 0, 'average': WeightAverage(model, config).state_dict()}, temporary)
         config['INIT_MODEL'] = str(destination)
 
 

@@ -1,9 +1,13 @@
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
+import json
 import struct
+import zlib
 
 import numpy as np
+
+from .storage import write_json
 
 from .protocol import INPUT_PLANES, MAGIC, Plane, Rule
 
@@ -38,37 +42,44 @@ class GameRecord:
     rule: Rule
     winner: int
     rows: int
-
-    @classmethod
-    def inspect(cls, path, expected_canvas):
-        path = Path(path)
-        with path.open('rb') as stream:
-            header = stream.read(28)
-        if len(header) != 28:
-            raise ValueError(f'Truncated game header: {path}')
-        magic, canvas, size, rule, winner, rows = struct.unpack('<8sIIIiI', header)
-        if (magic != MAGIC or canvas != expected_canvas or not 5 <= size <= canvas <= 25
-                or rule not in [int(value) for value in Rule] or winner not in (-1, 0, 1)
-                or not 1 <= rows <= size * size):
-            raise ValueError(f'Invalid game header: {path}')
-        if path.stat().st_size != 28 + rows * (16 + (INPUT_PLANES + 4) * canvas * canvas):
-            raise ValueError(f'Truncated or oversized game: {path}')
-        return cls(path, canvas, size, Rule(rule), winner, rows)
+    game_id: int
+    offset: int
+    compressed_bytes: int
+    opening: tuple[int, ...]
 
     def load(self):
         n = self.canvas * self.canvas
-        dtype = np.dtype([('player', '<i4'), ('action', '<u4'), ('weight', '<f4'),
-                          ('visits', '<u4'), ('observation', 'u1', (INPUT_PLANES, self.canvas, self.canvas)),
-                          ('policy', '<f4', (n,))])
-        data = np.fromfile(self.path, dtype=dtype, offset=28)
-        if len(data) != self.rows:
-            raise ValueError(f'Game changed after indexing: {self.path}')
-        expected_players = np.where(np.arange(self.rows) % 2 == 0, 1, -1)
+        packed = (INPUT_PLANES * n + 7) // 8
+        fields = [('player', '<i4'), ('action', '<u4'), ('weight', '<f4'), ('visits', '<u4')]
+        disk_dtype = np.dtype(fields + [('packed', 'u1', (packed,)), ('policy', '<f4', (n,))])
+        with self.path.open('rb') as stream:
+            stream.seek(self.offset)
+            compressed = stream.read(self.compressed_bytes)
+        try:
+            decoder = zlib.decompressobj()
+            raw = decoder.decompress(compressed, self.rows * disk_dtype.itemsize + 1)
+        except zlib.error as error:
+            raise ValueError(f'Corrupt game: {self.path}:{self.game_id}') from error
+        if len(raw) != self.rows * disk_dtype.itemsize or not decoder.eof or decoder.unused_data:
+            raise ValueError(f'Invalid compressed game: {self.path}:{self.game_id}')
+        stored = np.frombuffer(raw, dtype=disk_dtype)
+        dtype = np.dtype(fields + [('observation', 'u1', (INPUT_PLANES, self.canvas, self.canvas)),
+                                   ('policy', '<f4', (n,))])
+        data = np.empty(self.rows, dtype=dtype)
+        for name in ('player', 'action', 'weight', 'visits', 'policy'):
+            data[name] = stored[name]
+        data['observation'] = np.unpackbits(stored['packed'], axis=1, count=INPUT_PLANES * n).reshape(
+            self.rows, INPUT_PLANES, self.canvas, self.canvas)
+        expected_players = np.where((np.arange(self.rows) + len(self.opening)) % 2 == 0, 1, -1)
         if not np.array_equal(data['player'], expected_players):
             raise ValueError(f'Invalid player sequence: {self.path}')
         board = np.zeros((self.canvas, self.canvas), dtype=np.int8)
         on_board = np.zeros_like(board, dtype=bool)
         on_board[:self.size, :self.size] = True
+        for turn, action in enumerate(self.opening):
+            if not 0 <= action < n or not on_board.flat[action] or board.flat[action] != 0:
+                raise ValueError(f'Invalid opening trajectory: {self.path}')
+            board.flat[action] = 1 if turn % 2 == 0 else -1
         for step in data:
             player, action = int(step['player']), int(step['action'])
             obs = step['observation']
@@ -97,8 +108,46 @@ class GameRecord:
         return data
 
 
+def read_shard(path, canvas):
+    path = Path(path)
+    records = []
+    size_on_disk = path.stat().st_size
+    with path.open('rb') as stream:
+        header = stream.read(12)
+        if len(header) != 12:
+            raise ValueError(f'Truncated shard: {path}')
+        magic, count = struct.unpack('<8sI', header)
+        if magic != MAGIC or not 1 <= count <= size_on_disk // 32:
+            raise ValueError(f'Invalid shard header: {path}')
+        for _ in range(count):
+            header = stream.read(32)
+            if len(header) != 32:
+                raise ValueError(f'Truncated game index: {path}')
+            game_id, stored_canvas, size, rule, winner, rows, opening_count, compressed = struct.unpack('<IIIIiIII', header)
+            if (stored_canvas != canvas or not 5 <= size <= canvas <= 25
+                    or rule not in [int(value) for value in Rule] or winner not in (-1, 0, 1)
+                    or not 1 <= rows + opening_count <= size * size or compressed < 1
+                    or stream.tell() + 4 * opening_count + compressed > size_on_disk):
+                raise ValueError(f'Invalid game index: {path}')
+            opening = struct.unpack(f'<{opening_count}I', stream.read(4 * opening_count))
+            records.append(GameRecord(path, canvas, size, Rule(rule), winner, rows,
+                                      game_id, stream.tell(), compressed, opening))
+            stream.seek(compressed, 1)
+        if stream.tell() != size_on_disk or len({r.game_id for r in records}) != count:
+            raise ValueError(f'Trailing bytes or duplicate game IDs: {path}')
+    return records
+
+
+def directory_records(directory, canvas):
+    records = [record for path in sorted(Path(directory).glob('shard_*.mzs')) for record in read_shard(path, canvas)]
+    if len({r.game_id for r in records}) != len(records):
+        raise ValueError(f'Duplicate game IDs: {directory}')
+    return sorted(records, key=lambda record: record.game_id)
+
+
 def catalog(data_dir, canvas):
-    return [GameRecord.inspect(path, canvas) for path in sorted(Path(data_dir).glob('selfplay/iter_*/game_*.mzg'))]
+    return [record for directory in sorted(Path(data_dir).glob('selfplay/iter_*'))
+            for record in directory_records(directory, canvas)]
 
 
 def game_statistics(records, games):
@@ -111,6 +160,10 @@ def game_statistics(records, games):
         group['black_wins'] += int(record.winner == 1)
         group['white_wins'] += int(record.winner == -1)
         group['draws'] += int(record.winner == 0)
+        if not len(game):
+            group['forbidden_losses'] += int(record.rule == Rule.RENJU and record.winner == -1
+                                            and len(record.opening) % 2 == 1)
+            continue
         last = game[-1]
         group['forbidden_losses'] += int(record.rule == Rule.RENJU and record.winner == -1 and last['player'] == 1
             and last['observation'][Plane.FORBIDDEN_BLACK_TURN].reshape(-1)[last['action']] != 0)
@@ -127,12 +180,14 @@ def window_size(total, c):
 
 
 class Replay:
-    def __init__(self, records, config):
+    def __init__(self, records, config, snapshot_path=None):
         self.config = config
         self.total = sum(record.rows for record in records)
         target = window_size(self.total, config)
         selected, rows = [], 0
         for record in reversed(records):
+            if record.rows == 0:
+                continue
             selected.append(record)
             rows += record.rows
             if rows >= target:
@@ -140,6 +195,16 @@ class Replay:
         self.records = list(reversed(selected))
         if any(record.canvas != config['CANVAS_SIZE'] for record in self.records):
             raise ValueError('Replay canvas mismatch')
+        if snapshot_path is not None:
+            snapshot_path = Path(snapshot_path)
+            snapshot = {'total_rows': self.total, 'rows': rows, 'games': [
+                {'path': str(record.path.relative_to(snapshot_path.parent.parent)), 'id': record.game_id,
+                 'rows': record.rows} for record in self.records]}
+            if snapshot_path.exists():
+                if json.loads(snapshot_path.read_text()) != snapshot:
+                    raise ValueError('Replay snapshot changed during an unfinished iteration')
+            else:
+                write_json(snapshot_path, snapshot)
         self.games = [record.load() for record in self.records]
         self.ends = np.cumsum([len(game) for game in self.games])
         self.rows = rows
