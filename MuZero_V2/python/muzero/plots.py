@@ -84,8 +84,10 @@ def training_figure(history: Sequence[Mapping[str, Any]]) -> Figure:
         trained = [row for row in history if row['steps'] > 0]
         x = [row['iteration'] + 1 for row in trained]
         _plot_series(axes[2], [('Total', ORANGE, x, [row['loss'] for row in trained])], logarithmic=True)
-        _plot_series(axes[3], [(label, color, x, [row[key] for row in trained])
-                               for key, label, color in (('policy_loss', 'Policy', BLUE), ('value_loss', 'Value', GREEN))],
+        _plot_series(axes[3], [(label, color, x, [row.get(key, np.nan) for row in trained])
+                               for key, label, color in (('policy_loss', 'Policy', BLUE), ('value_loss', 'Value', GREEN),
+                                                          ('consistency_loss', 'Consistency', RED))
+                               if key != 'consistency_loss' or any(row.get('use_consistency_loss') for row in trained)],
                      logarithmic=True)
         step_losses = [row['step_losses'] for row in trained if row.get('step_losses')]
         series = []
@@ -98,7 +100,8 @@ def training_figure(history: Sequence[Mapping[str, Any]]) -> Figure:
         _plot_series(axes[5], [
             (label, color, x, [row.get('grad_norms', {}).get(key, np.nan) for row in trained])
             for key, label, color in (('representation', 'Representation h', BLUE),
-                                     ('dynamics', 'Dynamics g', GREEN), ('prediction', 'Prediction f', ORANGE))
+                                     ('dynamics', 'Dynamics g', GREEN), ('prediction', 'Prediction f', ORANGE),
+                                     ('consistency', 'Consistency', RED))
         ], logarithmic=True)
     return figure
 
