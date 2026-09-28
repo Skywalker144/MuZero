@@ -58,7 +58,7 @@ class ConfigTests(unittest.TestCase):
     def test_five_file_layout(self):
         expected = {'env.cfg', 'selfplay.cfg', 'net.cfg', 'train.cfg', 'run.cfg'}
         self.assertEqual(set(CONFIG_FILES), expected)
-        self.assertEqual({path.name for path in (ROOT / 'configs/baseline').glob('*.cfg')}, expected | {'eval.cfg'})
+        self.assertEqual({path.name for path in (ROOT / 'configs/baseline').glob('*.cfg')}, expected | {'eval.cfg', 'match.cfg'})
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / 'run.cfg').write_text('extends = baseline\n')
