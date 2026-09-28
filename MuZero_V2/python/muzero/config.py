@@ -21,6 +21,7 @@ FILE_SECTIONS = {
     'run.cfg': ('run',),
 }
 CONFIG_FILES = tuple(FILE_SECTIONS)
+CONSISTENCY_KEYS = {'USE_CONSISTENCY_LOSS', 'CONSISTENCY_LOSS_SCALE'}
 GROUPS = {
     'run': 'SEED DEVICE MAX_ITERS MAX_TIME_SECONDS DATA_DIR INIT_MODEL'.split(),
     'env': 'BOARD_SIZES BOARD_SIZE_WEIGHTS RULES RULE_WEIGHTS'.split(),
@@ -33,15 +34,16 @@ GROUPS = {
     'fpu': 'USE_FPU FPU_REDUCTION_MAX ROOT_FPU_REDUCTION_MAX FPU_PARENT_WEIGHT_BY_VISITED_POLICY_POW'.split(),
     'lcb': 'USE_LCB_FOR_SELECTION LCB_STDEVS MIN_VISIT_PROP_FOR_LCB'.split(),
     'temperature': 'MOVE_TEMPERATURE_SCHEDULE TEMPERATURE_MOVES CHOSEN_MOVE_TEMPERATURE_EARLY CHOSEN_MOVE_TEMPERATURE CHOSEN_MOVE_TEMPERATURE_HALFLIFE ROOT_POLICY_TEMPERATURE_EARLY ROOT_POLICY_TEMPERATURE NN_POLICY_TEMPERATURE'.split(),
-    'training': 'BATCH_SIZE TRAIN_STEPS UNROLL_STEPS HIDDEN_GRADIENT_SCALE SYMMETRY_AUGMENTATION BATCH_PREFETCH EMA_HALFLIFE_SAMPLES'.split(),
+    'training': 'BATCH_SIZE TRAIN_STEPS UNROLL_STEPS HIDDEN_GRADIENT_SCALE SYMMETRY_AUGMENTATION BATCH_PREFETCH EMA_HALFLIFE_SAMPLES USE_CONSISTENCY_LOSS'.split(),
     'optimizer': 'LR WEIGHT_DECAY ADAM_BETA1 ADAM_BETA2 ADAM_EPS'.split(),
-    'loss': 'VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE SOFT_POLICY_TEMPERATURE SOFT_POLICY_EPS'.split(),
+    'loss': 'VALUE_LOSS_SCALE SOFT_POLICY_LOSS_SCALE OPPONENT_POLICY_LOSS_SCALE SOFT_POLICY_TEMPERATURE SOFT_POLICY_EPS CONSISTENCY_LOSS_SCALE'.split(),
     'replay': 'REPLAY_RATIO REPLAY_WINDOW FIXED_WINDOW_ROWS MIN_ROWS MAX_ROWS TAPER_WINDOW_EXPONENT EXPAND_WINDOW_PER_ROW'.split(),
 }
 INT_KEYS = MODEL_INT_KEYS | set('SEED TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US FULL_SEARCH_VISITS CHEAP_SEARCH_VISITS BATCH_SIZE TRAIN_STEPS UNROLL_STEPS MIN_ROWS MAX_ROWS BOOTSTRAP_GAMES MAX_ITERS MAX_TIME_SECONDS TEMPERATURE_MOVES FIXED_WINDOW_ROWS GAMES_PER_ITER SELFPLAY_ROWS_PER_SHARD SELFPLAY_WRITE_QUEUE BATCH_PREFETCH'.split())
-INT_KEYS.update({'BALANCED_OPENING_MAX_TRIES', 'NUM_SEARCH_THREADS'})
+INT_KEYS.update({'BALANCED_OPENING_MAX_TRIES', 'NUM_SEARCH_THREADS', 'BOARD_SIZE'})
 BOOL_KEYS = set('SHAPED_DIRICHLET_NOISE USE_LCB_FOR_SELECTION SYMMETRY_AUGMENTATION AUXILIARY_POLICY_HEADS USE_FPU BALANCED_OPENING_RUN_POLICY_INIT_AFTER BALANCED_OPENING_RUN_POLICY_INIT_ON_FAILURE INIT_GAMES_WITH_POLICY USE_POLICY_TARGET_PRUNING'.split())
-STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE BOOTSTRAP_EVALUATOR'.split())
+BOOL_KEYS.add('USE_CONSISTENCY_LOSS')
+STR_KEYS = set('DEVICE DATA_DIR INIT_MODEL VALUE_HEAD MOVE_TEMPERATURE_SCHEDULE REPLAY_WINDOW SELFPLAY_SCHEDULE BOOTSTRAP_EVALUATOR RULE'.split())
 KEYS = {key for group in GROUPS.values() for key in group}
 LIST_KEYS = {'BOARD_SIZES': int, 'BOARD_SIZE_WEIGHTS': float, 'RULES': str, 'RULE_WEIGHTS': float}
 EVAL_GROUPS = {
@@ -53,7 +55,10 @@ EVAL_GROUPS = {
     'eval': ['SEED'],
 }
 EVAL_KEYS = {key for group in EVAL_GROUPS.values() for key in group}
-FLOAT_KEYS = (KEYS | EVAL_KEYS) - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
+MATCH_GROUPS = EVAL_GROUPS | {'opening': GROUPS['opening'], 'arena': ['BOARD_SIZE', 'RULE', 'NUM_GAME_THREADS']}
+MATCH_KEYS = {key for group in MATCH_GROUPS.values() for key in group}
+PROFILE_GROUPS = {'eval.cfg': EVAL_GROUPS, 'match.cfg': MATCH_GROUPS}
+FLOAT_KEYS = (KEYS | EVAL_KEYS | MATCH_KEYS) - INT_KEYS - BOOL_KEYS - STR_KEYS - LIST_KEYS.keys()
 EXP_KEYS = {'MAX_ITERS', 'MAX_TIME_SECONDS', 'SHARED_INIT', 'ARM_GPUS'}
 
 
@@ -67,7 +72,7 @@ def boolean(value):
 
 def read_profile(path, experiment=False):
     filename = Path(path).name.removesuffix('.local')
-    allowed_sections = (tuple(EVAL_GROUPS) if filename == 'eval.cfg' else
+    allowed_sections = (tuple(PROFILE_GROUPS[filename]) if filename in PROFILE_GROUPS else
                         ('experiment',) if filename == 'exp.cfg' and experiment else FILE_SECTIONS.get(filename))
     if allowed_sections is None:
         raise ValueError(f'{path}: unsupported configuration filename')
@@ -82,7 +87,7 @@ def read_profile(path, experiment=False):
     parent = parser['profile'].get('extends')
     if filename == 'exp.cfg' and parent:
         raise ValueError(f'{path}: experiment umbrellas do not support extends')
-    groups = EVAL_GROUPS if filename == 'eval.cfg' else GROUPS | {'experiment': EXP_KEYS}
+    groups = PROFILE_GROUPS.get(filename, GROUPS | {'experiment': EXP_KEYS})
     values = {}
     for section in parser.sections():
         if section == 'profile':
@@ -131,18 +136,20 @@ def validate_parameters(c):
             raise ValueError(f'{key} must be <= 1')
     if not re.fullmatch(r'cpu|cuda(?::[0-9]+)?', c['DEVICE']):
         raise ValueError('DEVICE must be cpu or cuda[:index]')
+    for key, maximum in [('BALANCED_OPENING_MAX_TRIES', 1000), ('BALANCED_OPENING_AVG_DIST_FACTOR', 100),
+                         ('BALANCED_OPENING_BALANCE_EXPONENT', 100), ('POLICY_INIT_AVG_MOVE_NUM', 100)]:
+        if key in c and c[key] > maximum:
+            raise ValueError(f'{key} must be <= {maximum}')
+    if 'POLICY_INIT_TEMPERATURE' in c and not 0.1 <= c['POLICY_INIT_TEMPERATURE'] <= 5:
+        raise ValueError('POLICY_INIT_TEMPERATURE must be 0.1..5')
 
 
 def validate(c):
     validate_parameters(c)
+    if c['USE_CONSISTENCY_LOSS'] and c['UNROLL_STEPS'] == 0:
+        raise ValueError('USE_CONSISTENCY_LOSS requires UNROLL_STEPS > 0')
     if c['POLICY_SURPRISE_DATA_WEIGHT'] + c['VALUE_SURPRISE_DATA_WEIGHT'] > 1:
         raise ValueError('Surprise data weights must sum to <= 1')
-    for key, maximum in [('BALANCED_OPENING_MAX_TRIES', 1000), ('BALANCED_OPENING_AVG_DIST_FACTOR', 100),
-                         ('BALANCED_OPENING_BALANCE_EXPONENT', 100), ('POLICY_INIT_AVG_MOVE_NUM', 100)]:
-        if c[key] > maximum:
-            raise ValueError(f'{key} must be <= {maximum}')
-    if not 0.1 <= c['POLICY_INIT_TEMPERATURE'] <= 5:
-        raise ValueError('POLICY_INIT_TEMPERATURE must be 0.1..5')
     if c['ADAM_BETA1'] >= 1 or c['ADAM_BETA2'] >= 1:
         raise ValueError('Adam betas must be < 1')
     for values_key, weights_key in (('BOARD_SIZES', 'BOARD_SIZE_WEIGHTS'), ('RULES', 'RULE_WEIGHTS')):
@@ -195,6 +202,10 @@ def resolve_profile(directory, files, keys, environ, prefix=''):
             merged.update(entries)
         values.update(merged)
     missing = keys - values.keys()
+    if missing & CONSISTENCY_KEYS:
+        _, defaults = read_profile(ROOT / 'configs/baseline/train.cfg')
+        values.update({key: defaults[key] for key in missing & CONSISTENCY_KEYS})
+        missing -= CONSISTENCY_KEYS
     if missing:
         raise ValueError(f'Missing keys: {sorted(missing)}')
     env = os.environ if environ is None else environ
@@ -220,6 +231,16 @@ def load_eval_config(directory, environ=None):
     return typed
 
 
+def load_match_config(directory, environ=None):
+    typed, _ = resolve_profile(directory, ('match.cfg',), MATCH_KEYS, environ, 'MATCH_')
+    validate_parameters(typed)
+    if not 5 <= typed['BOARD_SIZE'] <= 25 or typed['RULE'] not in SPEC['rules']:
+        raise ValueError('Invalid match board or rule')
+    if typed['BALANCED_OPENING_PROB'] != 1 or typed['BALANCED_OPENING_REJECTION_PROB_FALLBACK'] >= 1:
+        raise ValueError('Matches require balanced openings and a rejection fallback below 1')
+    return typed
+
+
 def load_config(directory, environ=None):
     typed, directory = resolve_profile(directory, CONFIG_FILES, KEYS, environ)
     validate(typed)
@@ -241,8 +262,8 @@ def load_config(directory, environ=None):
 
 def render_config(config, filename=None):
     lines = []
-    groups = EVAL_GROUPS if filename == 'eval.cfg' else GROUPS
-    sections = tuple(groups) if filename == 'eval.cfg' else FILE_SECTIONS[filename] if filename else groups
+    groups = PROFILE_GROUPS.get(filename, GROUPS)
+    sections = tuple(groups) if filename in PROFILE_GROUPS else FILE_SECTIONS[filename] if filename else groups
     for section in sections:
         keys = groups[section]
         lines.append(f'[{section}]')
