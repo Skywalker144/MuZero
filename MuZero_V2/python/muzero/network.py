@@ -150,7 +150,7 @@ class PredictionNet(nn.Module):
 
 
 class MuZeroNet(nn.Module):
-    def __init__(self, canvas_size: int, num_planes: int, config: ModelConfig):
+    def __init__(self, canvas_size: int, num_planes: int, config: ModelConfig, consistency: bool = False):
         super().__init__()
         self.canvas_size = canvas_size
         self.representation = RepresentationNet(num_planes, config.representation_num_channels,
@@ -158,6 +158,33 @@ class MuZeroNet(nn.Module):
         self.dynamics = DynamicsNet(canvas_size, config.dynamics_num_channels,
                                     config.dynamics_num_blocks, config.hidden_state_num_channels)
         self.prediction = PredictionNet(config)
+        self.consistency = ConsistencyNet(config.hidden_state_num_channels) if consistency else None
+
+
+class ConsistencyNet(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.projector = nn.ModuleList([nn.Conv2d(channels, channels, 1, bias=False) for _ in range(3)])
+        self.norms = nn.ModuleList([MaskedNorm(channels) for _ in range(3)])
+        self.predictor = nn.Sequential(
+            nn.Conv2d(channels, max(1, channels // 2), 1, bias=False), nn.ReLU(),
+            nn.Conv2d(max(1, channels // 2), channels, 1, bias=False),
+        )
+
+    def project(self, hidden: torch.Tensor) -> torch.Tensor:
+        mask = hidden[:, -1:]
+        x = hidden[:, :-1] * mask
+        for index, (layer, norm) in enumerate(zip(self.projector, self.norms)):
+            x = norm(layer(x), mask)
+            if index < 2:
+                x = F.relu(x)
+        return x
+
+    def forward(self, predicted: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        prediction = self.predictor(self.project(predicted))
+        with torch.no_grad():
+            projection = self.project(target)
+        return 1 - F.cosine_similarity(prediction.flatten(1), projection.flatten(1), dim=1)
 
 
 class InferenceModule(nn.Module):
