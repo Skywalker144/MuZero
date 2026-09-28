@@ -17,3 +17,7 @@ full 自我对弈搜索施加根温度与 Dirichlet 噪声；根节点强制探�
 该预设针对本项目的棋类模型，不包含通用 MuZero 的 reward 分支、Atari 标量分布支持或 reanalyse。并行批量推理、C++ 执行和 checkpoint 编排属于运行设施，各配置共用。
 
 实现入口与参数定义统一见 [文档索引](README.md)。
+
+[exp_consistency](../configs/exp_consistency) 采用 [EfficientZero §4.1](https://arxiv.org/abs/2111.00210) 的多步表征一致性目标：Dynamics 展开状态与相同步数的真实观测编码，经共享 projector 和预测分支的 predictor 对齐，目标分支停止梯度。损失使用 `1 - cosine`，与负余弦仅差常数。为保留棋盘位置并支持混合尺寸，投影采用逐位置的 1×1 卷积 MLP 和现有 MaskedNorm，余弦在有效位置的完整特征上计算；这是本项目的棋盘适配，不是 Atari 网络结构的逐层复刻。
+
+真实轨迹、动作和策略共用同一 D4 变换；一致性损失沿用展开行权重和梯度缩放。分片未保存最终落子后的观测，因此仅监督存在真实后续观测的展开位置，不重建终局特征，也不监督终局后的虚构状态。辅助头只参与训练，TorchScript 导出移除辅助头。实现入口见 [replay.py](../python/muzero/replay.py)、[network.py](../python/muzero/network.py) 与 [train.py](../python/muzero/train.py)。
