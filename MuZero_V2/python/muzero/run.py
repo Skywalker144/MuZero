@@ -4,16 +4,16 @@ import json
 import math
 import os
 from pathlib import Path
-import shutil
 import sys
 import time
 
 from .protocol import VERSION
-from .config import ROOT, load_config, model_identity, render_config, render_native_config
+from .config import CONSISTENCY_KEYS, ROOT, load_config, model_identity, render_config, render_native_config
 from .process import install_signals, run_process
-from .storage import atomic_path, run_lock, write_json
+from .storage import IterationStore, RunState, atomic_path, checkpoint_path, model_path, run_lock, write_json
 
 MUTABLE_KEYS = set('DEVICE TORCH_THREADS NUM_GAME_THREADS NN_MAX_BATCH_SIZE NN_BATCH_WAIT_US MAX_ITERS MAX_TIME_SECONDS DATA_DIR INIT_MODEL'.split())
+MUTABLE_KEYS |= CONSISTENCY_KEYS
 
 
 def build_binary():
@@ -28,31 +28,26 @@ def build_binary():
     return binary
 
 
-def model_path(data, iteration):
-    return data / 'models' / f'model_{iteration + 1:08d}.pt'
-
-
 def ensure_export(data, config, iteration):
     import torch
-    from .train import create_model, export_model
+    from .train import create_model, export_model, load_model_state
     destination = model_path(data, iteration)
     if not destination.exists():
-        checkpoint = torch.load(data / 'checkpoints/latest.pt', map_location='cpu', weights_only=True)
+        checkpoint = torch.load(checkpoint_path(data, iteration), map_location='cpu', weights_only=True)
         if checkpoint['protocol_version'] != VERSION or checkpoint['iteration'] != iteration or checkpoint['identity'] != model_identity(config):
             raise ValueError('Cannot export a different checkpoint generation')
         model = create_model(config)
-        model.load_state_dict(checkpoint['average']['model'])
+        load_model_state(model, checkpoint['average']['model'])
         export_model(model, destination)
-    with atomic_path(data / 'models/latest.pt') as temporary:
-        shutil.copyfile(destination, temporary)
     return destination
 
 
 def initialize(data, config):
     import torch
-    from .train import create_model, create_optimizer, save_checkpoint, seed_all, training_steps, WeightAverage
-    checkpoint_path = data / 'checkpoints/latest.pt'
-    if checkpoint_path.exists():
+    from .train import (create_model, create_optimizer, load_model_state, load_optimizer_state,
+                        save_checkpoint, seed_all, training_steps, WeightAverage)
+    destination = checkpoint_path(data, -1)
+    if destination.exists():
         return
     if any((data / name).exists() and any((data / name).glob('**/*.mzs' if name == 'selfplay' else '*.pt'))
            for name in ('models', 'selfplay')):
@@ -64,38 +59,41 @@ def initialize(data, config):
         initial = torch.load(config['INIT_MODEL'], map_location='cpu', weights_only=True)
         if initial['protocol_version'] != VERSION or initial['identity'] != model_identity(config):
             raise ValueError('Shared initialization architecture mismatch')
-        model.load_state_dict(initial['model'])
+        load_model_state(model, initial['model'])
         steps = training_steps(initial)
     optimizer = create_optimizer(model, config)
     average = WeightAverage(model, config)
     if config['INIT_MODEL']:
+        if 'optimizer' in initial:
+            load_optimizer_state(optimizer, initial['optimizer'])
         average.load_state_dict(initial['average'])
-    save_checkpoint(checkpoint_path, model, optimizer, config, -1, {}, steps, average)
+    save_checkpoint(destination, model, optimizer, config, -1, {}, steps, average)
 
 
 def train_and_checkpoint(data, c, iteration, records):
     import torch
     from .replay import Replay, game_statistics
-    from .train import create_model, create_optimizer, load_checkpoint, save_checkpoint, train_iteration, training_steps, WeightAverage
-    checkpoint_path = data / 'checkpoints/latest.pt'
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    from .train import create_model, create_optimizer, load_checkpoint, save_checkpoint, seed_all, train_iteration, training_steps, WeightAverage
+    source = checkpoint_path(data, iteration - 1)
+    checkpoint = torch.load(source, map_location='cpu', weights_only=True)
     if checkpoint['protocol_version'] != VERSION or checkpoint['identity'] != model_identity(c):
         raise ValueError('Checkpoint model/data protocol mismatch')
     steps = training_steps(checkpoint)
-    if checkpoint['iteration'] == iteration:
-        return checkpoint['metrics']
     if checkpoint['iteration'] != iteration - 1:
-        raise ValueError('Checkpoint is inconsistent with the pending iteration')
+        raise ValueError('Checkpoint is inconsistent with the committed iteration')
     del checkpoint
     started = time.monotonic()
     total_rows = sum(record.rows for record in records)
     ready = total_rows >= max(c['MIN_ROWS'], c['BATCH_SIZE'])
     device = c['DEVICE'] if ready else 'cpu'
+    seed_all(c['SEED'] + iteration + 1)
     model = create_model(c).to(device)
     optimizer = create_optimizer(model, c)
     average = WeightAverage(model, c)
-    load_checkpoint(checkpoint_path, model, optimizer, c, average)
-    metrics = {'steps': 0, 'loss': None, 'policy_loss': None, 'value_loss': None, 'replay_rows': 0}
+    load_checkpoint(source, model, optimizer, c, average)
+    metrics = {'steps': 0, 'loss': None, 'policy_loss': None, 'value_loss': None, 'consistency_loss': None,
+               'use_consistency_loss': c['USE_CONSISTENCY_LOSS'],
+               'consistency_loss_scale': c['CONSISTENCY_LOSS_SCALE'], 'replay_rows': 0}
     if ready:
         replay_started = time.monotonic()
         replay = Replay(records, c, data / 'replay' / f'{iteration:08d}.json')
@@ -105,7 +103,7 @@ def train_and_checkpoint(data, c, iteration, records):
         metrics['replay_rows'] = replay.rows
         metrics['replay_groups'] = game_statistics(replay.records, replay.games)
     metrics['train_seconds'] = time.monotonic() - started
-    save_checkpoint(checkpoint_path, model, optimizer, c, iteration, metrics, steps + metrics['steps'], average)
+    save_checkpoint(checkpoint_path(data, iteration), model, optimizer, c, iteration, metrics, steps + metrics['steps'], average)
     del model, optimizer, average
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -135,120 +133,91 @@ def run(config, binary, limit=None):
     with run_lock(data / 'logs/run.lock'):
         immutable = {key: value for key, value in config.items() if key not in MUTABLE_KEYS}
         manifest_path = data / 'logs/manifest.json'
+        manifest = {'protocol_version': VERSION, 'iteration_commit_version': 1, 'config': immutable}
         if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            if manifest['protocol_version'] != VERSION or manifest['config'] != immutable:
-                raise ValueError('DATA_DIR belongs to a different configuration; use a new DATA_DIR')
+            if json.loads(manifest_path.read_text()) != manifest:
+                raise ValueError('DATA_DIR belongs to a different configuration or commit format; use a new DATA_DIR')
         else:
             if any((data / name).exists() and any((data / name).iterdir()) for name in ('models', 'checkpoints', 'selfplay')):
                 raise ValueError('Refusing to adopt artifacts without a manifest')
-            write_json(manifest_path, {'protocol_version': VERSION, 'config': immutable})
+            write_json(manifest_path, manifest)
         torch.set_num_threads(config['TORCH_THREADS'])
-        state_path = data / 'logs/state.json'
-        state = json.loads(state_path.read_text()) if state_path.exists() else {
-            'iteration': 0, 'elapsed_seconds': 0, 'pending': None, 'target_rows': 0,
-            'completed_games': 0,
-            'rows_per_game': sum(size * size * weight for size, weight in
-                                 zip(config['BOARD_SIZES'], config['BOARD_SIZE_WEIGHTS'])) / sum(config['BOARD_SIZE_WEIGHTS']),
-        }
-        write_json(state_path, state)
-        initialize(data, config)
+        store = IterationStore(data)
+        state = store.read()
+        if state is None:
+            initialize(data, config)
+            state = RunState(
+                iteration=0, elapsed_seconds=0.0, target_rows=0, completed_games=0,
+                rows_per_game=sum(size * size * weight for size, weight in
+                                  zip(config['BOARD_SIZES'], config['BOARD_SIZE_WEIGHTS'])) / sum(config['BOARD_SIZE_WEIGHTS']),
+            )
+            store.commit(state)
+        store.recover(state)
         resolved = data / 'logs/resolved.cfg'
         with atomic_path(resolved) as temporary:
             temporary.write_text(render_native_config(config))
         if (data / 'logs/iters').is_dir():
             render_training(data)
-        base_elapsed, started = state['elapsed_seconds'], time.monotonic()
         limit = limit if limit is not None else config['MAX_ITERS'] or None
-        records = catalog(data, config['CANVAS_SIZE'])
-        try:
-            while True:
-                state['elapsed_seconds'] = base_elapsed + time.monotonic() - started
-                if state['pending'] is None and ((limit is not None and state['iteration'] >= limit) or
-                        (config['MAX_TIME_SECONDS'] and state['elapsed_seconds'] >= config['MAX_TIME_SECONDS'])):
-                    break
-                iteration = state['iteration']
-                directory = data / 'selfplay' / f'iter_{iteration:08d}'
-                directory.mkdir(parents=True, exist_ok=True)
-                checkpoint = torch.load(data / 'checkpoints/latest.pt', map_location='cpu', weights_only=True)
-                if checkpoint['protocol_version'] != VERSION or checkpoint['identity'] != model_identity(config):
-                    raise ValueError('Checkpoint model/data protocol mismatch')
-                generation = checkpoint['iteration']
-                steps = training_steps(checkpoint)
-                del checkpoint
-                if generation not in (iteration - 1, iteration):
-                    raise ValueError('Invalid checkpoint generation')
-                if state['pending'] is None:
-                    if generation != iteration - 1:
-                        raise ValueError('Trained checkpoint exists without an iteration plan')
-                    if any(directory.glob('shard_*.mzs')):
-                        raise ValueError('Selfplay artifacts exist without an iteration plan')
-                    planned = dict(state)
-                    games = plan_games(planned, config, sum(record.rows for record in records))
-                    planned['pending'] = {'games': games, 'seed': config['SEED'] + iteration * 1000000007,
-                                          'selfplay_seconds': 0, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-                                          'evaluator': config['BOOTSTRAP_EVALUATOR'] if steps == 0 else 'network',
-                                          'model_generation': generation}
-                    state = planned
-                    write_json(state_path, state)
-                pending = state['pending']
-                if pending['binary_sha256'] != hashlib.sha256(binary.read_bytes()).hexdigest():
-                    raise ValueError('Selfplay binary changed during an unfinished iteration')
-                if pending['model_generation'] != iteration - 1 or pending['evaluator'] not in ('random', 'network'):
-                    raise ValueError('Invalid pending evaluator generation')
-                lineage = {key: pending[key] for key in ('games', 'seed', 'binary_sha256', 'evaluator', 'model_generation')}
-                lineage_path = directory / 'manifest.json'
-                if lineage_path.exists():
-                    if json.loads(lineage_path.read_text()) != lineage:
-                        raise ValueError('Selfplay lineage changed')
-                else:
-                    write_json(lineage_path, lineage)
-                expected = set(range(pending['games']))
-                current = directory_records(directory, config['CANVAS_SIZE'])
-                existing = {record.game_id for record in current}
-                if existing - expected:
-                    raise ValueError('Unexpected selfplay game IDs')
-                for record in current:
-                    record.load()
-                if existing != expected:
-                    if generation != iteration - 1:
-                        raise ValueError('Trained checkpoint exists before selfplay completion')
-                    deployed = ensure_export(data, config, generation) if pending['evaluator'] == 'network' else '-'
-                    print(f"iter={iteration} evaluator={pending['evaluator']} selfplay={len(existing)}/{pending['games']}", flush=True)
-                    selfplay_start = time.monotonic()
-                    try:
-                        run_process([str(binary), str(resolved), str(deployed), str(directory),
-                                     str(pending['games']), str(pending['seed']), '0', pending['evaluator']])
-                    finally:
-                        pending['selfplay_seconds'] += time.monotonic() - selfplay_start
-                        state['elapsed_seconds'] = base_elapsed + time.monotonic() - started
-                        write_json(state_path, state)
-                    if {r.game_id for r in directory_records(directory, config['CANVAS_SIZE'])} != expected:
-                        raise ValueError('Selfplay did not produce the planned games')
-                current = directory_records(directory, config['CANVAS_SIZE'])
-                records = [record for record in records if record.path.parent != directory] + current
-                current_groups = game_statistics(current, (record.load() for record in current))
-                metrics = train_and_checkpoint(data, config, iteration, records)
-                if steps > 0 or metrics['steps'] > 0 or config['BOOTSTRAP_EVALUATOR'] == 'network':
-                    ensure_export(data, config, iteration)
-                rows = sum(record.rows for record in current)
-                metrics = dict(metrics, game_groups=current_groups, iteration=iteration, games=len(current), rows=rows,
-                               selfplay_evaluator=pending['evaluator'], model_generation=pending['model_generation'],
-                               total_rows=sum(record.rows for record in records),
-                               black_wins=sum(record.winner == 1 for record in current),
-                               draws=sum(record.winner == 0 for record in current),
-                               white_wins=sum(record.winner == -1 for record in current),
-                               selfplay_seconds=pending['selfplay_seconds'])
-                write_json(data / 'logs/iters' / f'{iteration:08d}.json', metrics)
-                state = dict(state, rows_per_game=rows / len(current) if current else state['rows_per_game'],
-                             completed_games=state['completed_games'] + len(current), pending=None,
-                             iteration=iteration + 1, elapsed_seconds=base_elapsed + time.monotonic() - started)
-                write_json(state_path, state)
-                render_training(data)
-                print(json.dumps(metrics, sort_keys=True), flush=True)
-        finally:
-            state['elapsed_seconds'] = base_elapsed + time.monotonic() - started
-            write_json(state_path, state)
+        records = None
+        while ((limit is None or state['iteration'] < limit) and
+               (not config['MAX_TIME_SECONDS'] or state['elapsed_seconds'] < config['MAX_TIME_SECONDS'])):
+            started = time.monotonic()
+            if records is None:
+                records = catalog(data, config['CANVAS_SIZE'])
+            iteration = state['iteration']
+            checkpoint = torch.load(checkpoint_path(data, iteration - 1), map_location='cpu', weights_only=True)
+            if checkpoint['protocol_version'] != VERSION or checkpoint['identity'] != model_identity(config):
+                raise ValueError('Checkpoint model/data protocol mismatch')
+            if checkpoint['iteration'] != iteration - 1:
+                raise ValueError('Invalid committed checkpoint generation')
+            steps = training_steps(checkpoint)
+            del checkpoint
+            planned: RunState = state.copy()
+            games = plan_games(planned, config, sum(record.rows for record in records))
+            evaluator = config['BOOTSTRAP_EVALUATOR'] if steps == 0 else 'network'
+            seed = config['SEED'] + iteration * 1000000007
+            directory = data / 'selfplay' / f'iter_{iteration:08d}'
+            write_json(directory / 'manifest.json', {
+                'games': games, 'seed': seed, 'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                'evaluator': evaluator, 'model_generation': iteration - 1,
+            })
+            selfplay_seconds = 0.0
+            if games:
+                deployed = ensure_export(data, config, iteration - 1) if evaluator == 'network' else '-'
+                print(f"iter={iteration} evaluator={evaluator} selfplay=0/{games}", flush=True)
+                selfplay_start = time.monotonic()
+                run_process([str(binary), str(resolved), str(deployed), str(directory),
+                             str(games), str(seed), '0', evaluator])
+                selfplay_seconds = time.monotonic() - selfplay_start
+            current = directory_records(directory, config['CANVAS_SIZE'])
+            if {record.game_id for record in current} != set(range(games)):
+                raise ValueError('Selfplay did not produce the planned games')
+            records = records + current
+            current_groups = game_statistics(current, (record.load() for record in current))
+            metrics = train_and_checkpoint(data, config, iteration, records)
+            if steps > 0 or metrics['steps'] > 0 or config['BOOTSTRAP_EVALUATOR'] == 'network':
+                ensure_export(data, config, iteration)
+            rows = sum(record.rows for record in current)
+            metrics = dict(metrics, game_groups=current_groups, iteration=iteration, games=len(current), rows=rows,
+                           selfplay_evaluator=evaluator, model_generation=iteration - 1,
+                           total_rows=sum(record.rows for record in records),
+                           black_wins=sum(record.winner == 1 for record in current),
+                           draws=sum(record.winner == 0 for record in current),
+                           white_wins=sum(record.winner == -1 for record in current),
+                           selfplay_seconds=selfplay_seconds)
+            metric_path = data / 'logs/iters' / f'{iteration:08d}.json'
+            write_json(metric_path, metrics)
+            render_training(data)
+            elapsed = state['elapsed_seconds'] + time.monotonic() - started
+            metrics['elapsed_seconds'] = elapsed
+            write_json(metric_path, metrics)
+            planned.update(rows_per_game=rows / len(current) if current else state['rows_per_game'],
+                           completed_games=state['completed_games'] + len(current),
+                           iteration=iteration + 1, elapsed_seconds=elapsed)
+            store.commit(planned)
+            state = planned
+            print(json.dumps(metrics, sort_keys=True), flush=True)
 
 
 def main():

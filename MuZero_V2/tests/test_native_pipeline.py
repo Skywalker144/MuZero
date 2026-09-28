@@ -19,25 +19,22 @@ class NativePipelineTests(unittest.TestCase):
             data = Path(tmp)
             env = {key: value for key, value in os.environ.items() if key not in KEYS}
             env.update({'MUZERO_BINARY': str(binary), 'DATA_DIR': str(data),
-                        'CONFIG_DIR': str(ROOT / 'configs/minimal_test'), 'DEVICE': 'cpu', 'BOARD_SIZES': '5'})
+                        'CONFIG_DIR': str(ROOT / 'configs/minimal_test'), 'DEVICE': os.environ.get('MUZERO_TEST_DEVICE', 'cpu'), 'BOARD_SIZES': '5'})
             command = [sys.executable, '-m', 'muzero.run', '1']
             subprocess.run(command, env=env, check=True, timeout=180)
             state_path = data / 'logs/state.json'
             state = json.loads(state_path.read_text())
             self.assertEqual(state['iteration'], 1)
-            self.assertIsNone(state['pending'])
+            metric = json.loads((data / 'logs/iters/00000000.json').read_text())
+            self.assertEqual(metric['elapsed_seconds'], state['elapsed_seconds'])
             plot = data / 'training.png'
             self.assertEqual(plot.read_bytes()[:8], b'\x89PNG\r\n\x1a\n')
             records = directory_records(data / 'selfplay/iter_00000000', 5)
             self.assertEqual(len(records), 2)
             checkpoint = data / 'checkpoints/latest.pt'
             digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-            state.update(iteration=0, completed_games=0, pending={
-                'games': 2, 'seed': 0, 'selfplay_seconds': 0,
-                'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
-                'evaluator': 'random', 'model_generation': -1,
-            })
-            state_path.write_text(json.dumps(state))
+            checkpoint.unlink()
+            (data / 'models/latest.pt').unlink()
             subprocess.run(command, env=env, check=True, timeout=180)
             self.assertEqual(hashlib.sha256(checkpoint.read_bytes()).hexdigest(), digest)
             self.assertEqual(json.loads(state_path.read_text())['iteration'], 1)

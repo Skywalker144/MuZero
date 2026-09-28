@@ -14,6 +14,7 @@ from muzero.replay import Replay, read_shard, directory_records
 from muzero.train import WeightAverage, create_model, create_optimizer, save_checkpoint, load_checkpoint, export_model
 from muzero.prefetch import BatchStream
 from muzero.run import ensure_export
+from muzero.storage import checkpoint_path
 from muzero.network import InferenceModule
 from muzero.protocol import INPUT_PLANES, Plane
 from test_learning import write_game
@@ -81,7 +82,7 @@ class DataPipelineTests(unittest.TestCase):
             next(model.parameters()).add_(1)
         with tempfile.TemporaryDirectory() as tmp:
             data = Path(tmp)
-            save_checkpoint(data / 'checkpoints/latest.pt', model, create_optimizer(model, c), c, 0, {}, 1, average)
+            save_checkpoint(checkpoint_path(data, 0), model, create_optimizer(model, c), c, 0, {}, 1, average)
             exported = torch.jit.load(str(ensure_export(data, c, 0)))
             observation = torch.zeros(1, INPUT_PLANES, 5, 5)
             observation[:, Plane.ON_BOARD] = 1
