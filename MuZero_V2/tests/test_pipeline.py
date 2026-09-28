@@ -88,10 +88,20 @@ class PipelineTests(unittest.TestCase):
 
     def test_experiment_limits_and_destinations(self):
         _, settings, arms, slots = experiment_plan(ROOT / 'configs/exp_muzero_opt', environ={})
-        self.assertEqual(len(arms), 2)
-        self.assertEqual([arm['name'] for arm in arms], ['exp_baseline', 'exp_muzero'])
+        profiles = {
+            'exp_baseline': ('exp_baseline', {}),
+            'exp_baseline_no_lcb': ('exp_baseline', {'USE_LCB_FOR_SELECTION': False}),
+            'exp_baseline_no_lcb_no_nn_temp': ('exp_baseline', {
+                'USE_LCB_FOR_SELECTION': False, 'NN_POLICY_TEMPERATURE': 1.0,
+            }),
+            'exp_baseline_no_nn_temp': ('exp_baseline', {'NN_POLICY_TEMPERATURE': 1.0}),
+            'exp_baseline_no_policy_surprise': ('exp_baseline', {'POLICY_SURPRISE_DATA_WEIGHT': 0.0}),
+            'exp_muzero': ('exp_muzero', {}),
+        }
+        self.assertEqual([arm['name'] for arm in arms], sorted(profiles))
         for arm in arms:
-            expected = load_config(ROOT / 'configs' / arm['name'], environ={})
+            parent, overrides = profiles[arm['name']]
+            expected = load_config(ROOT / 'configs' / parent, environ={}) | overrides
             actual = arm['config']
             for key in expected.keys() - {'DATA_DIR', 'MAX_ITERS', 'MAX_TIME_SECONDS'}:
                 self.assertEqual(actual[key], expected[key], (arm['name'], key))
@@ -108,7 +118,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
             (directory / 'exp.cfg').write_text('[experiment]\nmax_time_seconds = 120\nmax_iters = 3\nshared_init = true\narm_gpus =\n')
-            for name in ('baseline', 'muzero'):
+            for name in ('baseline', 'exp_muzero'):
                 (directory / name).mkdir()
                 (directory / name / 'run.cfg').write_text(f'extends = {name}\n')
             _, settings, arms, _ = experiment_plan(directory, environ={})
