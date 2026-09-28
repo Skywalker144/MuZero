@@ -218,6 +218,10 @@ class Replay:
         if self.rows < b:
             raise ValueError('Replay has fewer rows than BATCH_SIZE')
         observations = np.empty((b, INPUT_PLANES, c['CANVAS_SIZE'], c['CANVAS_SIZE']), dtype=np.float32)
+        if c['USE_CONSISTENCY_LOSS']:
+            trajectory = np.zeros((b, k + 1, *observations.shape[1:]), dtype=np.float32)
+            observations = trajectory[:, 0]
+            consistency_mask = np.zeros((b, k), dtype=np.bool_)
         actions = np.zeros((b, k), dtype=np.int64)
         heads = policy_head_count(c['AUXILIARY_POLICY_HEADS'])
         policies = np.zeros((b, k + 1, heads, n), dtype=np.float32)
@@ -241,6 +245,9 @@ class Replay:
                     continue
                 if step > 0:
                     weights[batch, step] = game[row]['weight'] * self.rows / self.weight_sum
+                    if c['USE_CONSISTENCY_LOSS']:
+                        trajectory[batch, step] = game[row]['observation']
+                        consistency_mask[batch, step - 1] = True
                 if step < k:
                     actions[batch, step] = game[row]['action']
                 if not c['AUXILIARY_POLICY_HEADS']:
@@ -259,7 +266,14 @@ class Replay:
                     policies[batch, step, soft] = softened / softened.sum()
                     masks[batch, step, [main, soft]] = 1
         if c['SYMMETRY_AUGMENTATION']:
-            observations, actions, policies = augment(observations, actions, policies, rng)
+            augmented, actions, policies = augment(
+                trajectory if c['USE_CONSISTENCY_LOSS'] else observations, actions, policies, rng)
+            if c['USE_CONSISTENCY_LOSS']:
+                trajectory = augmented
+            else:
+                observations = augmented
+        if c['USE_CONSISTENCY_LOSS']:
+            return trajectory[:, 0].copy(), actions, policies, values, masks, weights, trajectory[:, 1:].copy(), consistency_mask
         return observations, actions, policies, values, masks, weights
 
 
