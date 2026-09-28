@@ -9,16 +9,18 @@
 - 真实棋规与观测：[game.h](../cpp/include/muzero/game.h)。
 - MuZero 搜索、FPU、根噪声与 LCB：[search.cpp](../cpp/src/search.cpp)。
 - 评估配置与树并行：[eval.cfg](../configs/baseline/eval.cfg)、[search.h](../cpp/include/muzero/search.h)；命令行评估：[evaluate.py](../python/muzero/evaluate.py)、[eval_main.cpp](../cpp/src/eval_main.cpp)。
+- 等墙钟 Elo、C++ 并行比赛与断点续测：[elo.md](elo.md)。
 - 浏览器对弈与常驻模型会话：[Web UI](../../web/README.md)、[eval_session.h](../cpp/include/muzero/eval_session.h)、[engine.py](../python/muzero/engine.py)。
 - 对局线程与共享推理队列：[selfplay_main.cpp](../cpp/src/selfplay_main.cpp)、[batcher.cpp](../cpp/src/batcher.cpp)、[torch_backend.cpp](../cpp/src/torch_backend.cpp)。
 - 平衡开局与 policy init：[opening.h](../cpp/include/muzero/opening.h)、[opening.cpp](../cpp/src/opening.cpp)；配置入口为 [selfplay.cfg](../configs/baseline/selfplay.cfg) 的 `[opening]`；SkyZero 源码对照入口为 [verify_opening.py](../scripts/verify_opening.py)。
 - 随机冷启动评估器：[random_evaluator.cpp](../cpp/src/random_evaluator.cpp)；训练进度与模型切换：[train.py](../python/muzero/train.py)、[run.py](../python/muzero/run.py)。
 - KataGo 算法对照：[verify_alignment.py](../scripts/verify_alignment.py)、[test_alignment.py](../tests/test_alignment.py)；自对弈行权重：[training_targets.cpp](../cpp/src/training_targets.cpp)。
 - 网络结构配置：[net.cfg](../configs/baseline/net.cfg)、[model_config.py](../python/muzero/model_config.py)；网络与 TorchScript：[network.py](../python/muzero/network.py)、[train.py](../python/muzero/train.py)。
+- 自监督一致性损失：[exp_consistency](../configs/exp_consistency)、[network.py](../python/muzero/network.py)、[train.py](../python/muzero/train.py)；开关与旧 checkpoint 续训见 [README](../README.md)。
 - 完整轨迹分片、异步写入与恢复：[record.h](../cpp/include/muzero/record.h)、[record.cpp](../cpp/src/record.cpp)；回放窗口、快照与展开目标：[replay.py](../python/muzero/replay.py)。
 - 批次预取：[prefetch.py](../python/muzero/prefetch.py)；EMA 状态与推理模型发布：[train.py](../python/muzero/train.py)、[run.py](../python/muzero/run.py)。
-- baseline 与 muzero 对比实验：[exp_muzero_opt](../configs/exp_muzero_opt/exp.cfg)。
-- iteration 产量计划、冷启动预算与恢复：[run.py](../python/muzero/run.py)；实验调度：[experiment.py](../python/muzero/experiment.py)。
+- baseline、muzero 与搜索消融实验：[exp_muzero_opt](../configs/exp_muzero_opt)。
+- iteration 产量计划、冷启动预算与计时：[run.py](../python/muzero/run.py)；整轮提交与回退：[storage.py](../python/muzero/storage.py)；实验调度：[experiment.py](../python/muzero/experiment.py)。
 - 训练图像与离线重绘：[plots.py](../python/muzero/plots.py)、[plot.sh](../scripts/plot.sh)。
 - 算法边界：[algorithm.md](algorithm.md)。
 - Linux 验证入口：[testing.md](testing.md)。
