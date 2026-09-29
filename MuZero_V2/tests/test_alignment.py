@@ -81,14 +81,21 @@ class AlignmentTests(unittest.TestCase):
             observations, _, policies, values, masks, weights = map(torch.from_numpy, batch)
             logits, value_logits = expected.prediction(expected.representation(observations))
             loss = torch.zeros(())
+            head_losses = {}
             for head, scale in enumerate([1, 8, 0.15, 1.2]):
                 rows = F.cross_entropy(logits[:, head], policies[:, 0, head], reduction='none')
-                loss = loss + (rows * masks[:, 0, head] * weights[:, 0]).mean() * scale
+                head_loss = (rows * masks[:, 0, head] * weights[:, 0]).mean() * scale
+                head_losses[PolicyHead(head).name.lower()] = head_loss.item()
+                loss = loss + head_loss
             loss = loss + 0.72 * (F.cross_entropy(value_logits, values[:, 0], reduction='none') * weights[:, 0]).mean()
             loss.backward()
             optimizer = torch.optim.SGD(model.parameters(), lr=0)
             metrics = train_iteration(model, optimizer, FixedBatch(), c, 0, 'cpu', WeightAverage(model, c))
             self.assertAlmostEqual(metrics['loss'], loss.item(), places=5)
+            self.assertEqual(set(metrics['policy_head_losses']), set(head_losses))
+            for name, value in head_losses.items():
+                self.assertAlmostEqual(metrics['policy_head_losses'][name], value, places=5)
+            self.assertAlmostEqual(sum(metrics['policy_head_losses'].values()), metrics['policy_loss'], places=5)
             for actual, reference in zip(model.parameters(), expected.parameters()):
                 if reference.grad is not None:
                     torch.testing.assert_close(actual.grad, reference.grad, rtol=2e-5, atol=1e-6)
