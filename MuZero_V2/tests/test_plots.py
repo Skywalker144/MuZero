@@ -13,6 +13,21 @@ from muzero.storage import write_json
 
 
 class PlotTests(unittest.TestCase):
+    def test_sample_ticks_and_policy_head_losses(self):
+        history = [dict(iteration=0, games=1, rows=700000, total_rows=700000,
+                        black_wins=1, white_wins=0, draws=0, steps=1, loss=5.,
+                        policy_loss=4., value_loss=1.,
+                        policy_head_losses=dict(main=1., soft=2., opponent=.3, soft_opponent=.7))]
+        figure = training_figure(history)
+        for axis in figure.axes[:2]:
+            formatter = axis.xaxis.get_major_formatter()
+            for value, label in [(0, '0'), (700000, '7e5'), (640000, '6.4e5'), (1000, '1e3')]:
+                self.assertEqual(formatter(value), label)
+        lines = {line.get_label(): line for line in figure.axes[3].lines}
+        for label, value in [('Policy main', 1.), ('Policy soft', 2.),
+                             ('Policy opponent', .3), ('Policy soft opponent', .7)]:
+            np.testing.assert_allclose(lines[label].get_ydata(), [value])
+
     def test_empty_and_bootstrap_history(self):
         for history in ([], [dict(iteration=0, games=2, rows=30, total_rows=30,
                                   black_wins=1, white_wins=0, draws=1, steps=0,
