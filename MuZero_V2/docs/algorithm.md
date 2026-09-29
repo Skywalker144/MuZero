@@ -8,7 +8,7 @@
 
 网络自对弈的开局初始化采用 SkyZero V8.1 默认 KataGomo 路径，源码入口见 [opening.cpp](../cpp/src/opening.cpp)。初始化使用真实局面的 initial 推理，包含换行棋方的反事实观测，不使用 dynamics 或 MCTS。开局动作保存为轨迹前缀，不进入策略或价值监督；初始化终局保留对局记录但不产生训练样本。随机冷启动跳过网络开局初始化。记录与回放入口见 [文档索引](README.md)。
 
-增强基线的 WDL 按当前行棋方监督终局结果，搜索使用胜概率减负概率，回传逐层取反。网络同时学习 main、soft、opponent、soft-opponent 四个策略头；搜索仅消费 main。训练行权重与 surprise 重分配见 [training_targets.cpp](../cpp/src/training_targets.cpp)，完整轨迹保留 cheap 搜索供 dynamics 展开与 opponent 监督。回放按行权重采样起点，展开步按当前行权重相对回放平均权重缩放全部损失；opponent 掩码只取决于下一步目标是否存在。soft 目标的范围是有效棋盘。终局之后继续交替 WDL 目标，关闭策略监督。
+增强基线的 WDL 按当前行棋方监督终局结果，搜索使用胜概率减负概率，回传逐层取反。网络同时学习 main、soft、opponent、soft-opponent 四个策略头；搜索仅消费 main。训练行权重与 surprise 重分配见 [training_targets.cpp](../cpp/src/training_targets.cpp)，完整轨迹保留 cheap 搜索供 dynamics 展开与 opponent 监督。回放按行权重采样起点，展开步按当前行权重相对回放平均权重缩放全部损失。吸收态训练参考 [MiniZero](https://github.com/rlglab/minizero/tree/394b2e483d00cb658d5a24ccca297f864c3280c7)：终局后在有效棋盘随机采样动作，四个策略头使用均匀目标，WDL 保留当前行棋方视角；真实轨迹与吸收态的目标边界统一见 [replay.py](../python/muzero/replay.py)。
 
 full 自我对弈搜索施加根温度与 Dirichlet 噪声；根节点强制探索和事后访问权重回调见 [search.cpp](../cpp/src/search.cpp)。自对弈落子使用回调后的分布和落子温度，训练策略目标另行应用 LCB。NN policy temperature 在 [TorchBackend](../cpp/src/torch_backend.cpp) 统一处理，覆盖开局、根节点及 dynamics 推理，不改变训练 logits。LCB 是选择启发式，隐状态误差及相关回传样本使它不构成严格的统计置信保证。没有引入 AlphaZero 的树内规则搜索、跨手树复用。
 
