@@ -3,14 +3,14 @@
 在仓库根目录运行：
 
 ```bash
-bash web/run.sh
+bash web/webui.sh
 ```
 
 默认使用 Conda `pytorch`，增量构建 V2 评估引擎，并在 <http://127.0.0.1:8765> 提供单用户对弈界面。棋局由服务保存，刷新页面可继续；关闭服务后不保留。
 
 ```bash
-bash web/run.sh --model MuZero_V2/data/exp_baseline/models/model_00000059.pt
-EVAL_NUM_SEARCH_THREADS=8 EVAL_DEVICE=cuda:0 bash web/run.sh --port 8765
+bash web/webui.sh --model MuZero_V2/data/exp_baseline/models/model_00000059.pt
+EVAL_NUM_SEARCH_THREADS=8 EVAL_DEVICE=cuda:0 bash web/webui.sh --port 8765
 ```
 
 启动选项以 [server.py](server.py) 为准。自动扫描数据目录中的分代 TorchScript 模型，不读取训练 checkpoint；其他模型可用 `--model` 指定。模型列表在服务启动时生成。加载后使用常驻模型，同一模型新局复用进程，模型更换在新局时生效。
