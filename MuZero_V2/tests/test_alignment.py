@@ -42,10 +42,11 @@ class AlignmentTests(unittest.TestCase):
                     for step in range(3):
                         row = start + step
                         if row >= 9:
-                            self.assertTrue((masks[i, step] == 0).all())
+                            np.testing.assert_array_equal(masks[i, step], 1)
+                            np.testing.assert_allclose(policies[i, step], 1 / 25)
                             continue
                         self.assertEqual(weights[i, step] > 0, row % 2 == 0)
-                        np.testing.assert_array_equal(masks[i, step], [1, 1, row + 1 < 9, row + 1 < 9])
+                        np.testing.assert_array_equal(masks[i, step], 1)
                         for offset, head in [(0, PolicyHead.SOFT), (1, PolicyHead.SOFT_OPPONENT)]:
                             if row + offset >= 9:
                                 continue

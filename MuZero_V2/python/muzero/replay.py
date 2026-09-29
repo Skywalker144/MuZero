@@ -222,11 +222,11 @@ class Replay:
             trajectory = np.zeros((b, k + 1, *observations.shape[1:]), dtype=np.float32)
             observations = trajectory[:, 0]
             consistency_mask = np.zeros((b, k), dtype=np.bool_)
-        actions = np.zeros((b, k), dtype=np.int64)
+        actions = np.empty((b, k), dtype=np.int64)
         heads = policy_head_count(c['AUXILIARY_POLICY_HEADS'])
-        policies = np.zeros((b, k + 1, heads, n), dtype=np.float32)
+        policies = np.empty((b, k + 1, heads, n), dtype=np.float32)
         values = np.zeros((b, k + 1, len(Outcome)), dtype=np.float32)
-        masks = np.zeros((b, k + 1, heads), dtype=np.float32)
+        masks = np.ones((b, k + 1, heads), dtype=np.float32)
         weights = np.ones((b, k + 1), dtype=np.float32)
         if self.weight_sum <= 0:
             raise ValueError('Replay has no positive training weights')
@@ -236,12 +236,17 @@ class Replay:
             start = int(position - (self.ends[index - 1] if index else 0))
             game, record = self.games[index], self.records[index]
             observations[batch] = game[start]['observation']
+            on_board = observations[batch, Plane.ON_BOARD].reshape(n)
+            board_actions = np.flatnonzero(on_board)
+            policies[batch] = on_board / len(board_actions)
             for step in range(k + 1):
                 row = start + step
                 player = int(game[start]['player']) * (-1 if step % 2 else 1)
                 outcome = record.winner * player
                 values[batch, step, Outcome.WIN if outcome > 0 else Outcome.LOSS if outcome < 0 else Outcome.DRAW] = 1
                 if row >= len(game):
+                    if step < k:
+                        actions[batch, step] = rng.choice(board_actions)
                     continue
                 if step > 0:
                     weights[batch, step] = game[row]['weight'] * self.rows / self.weight_sum
@@ -252,19 +257,16 @@ class Replay:
                     actions[batch, step] = game[row]['action']
                 if not c['AUXILIARY_POLICY_HEADS']:
                     policies[batch, step, PolicyHead.MAIN] = game[row]['policy']
-                    masks[batch, step, PolicyHead.MAIN] = 1
                     continue
                 for offset, main, soft in ((0, PolicyHead.MAIN, PolicyHead.SOFT), (1, PolicyHead.OPPONENT, PolicyHead.SOFT_OPPONENT)):
                     target_row = row + offset
                     if target_row >= len(game):
                         continue
                     target = game[target_row]
-                    legal = target['observation'][Plane.ON_BOARD].reshape(n) != 0
                     softened = np.zeros(n, dtype=np.float32)
-                    softened[legal] = (target['policy'][legal] + c['SOFT_POLICY_EPS']) ** (1 / c['SOFT_POLICY_TEMPERATURE'])
+                    softened[board_actions] = (target['policy'][board_actions] + c['SOFT_POLICY_EPS']) ** (1 / c['SOFT_POLICY_TEMPERATURE'])
                     policies[batch, step, main] = target['policy']
                     policies[batch, step, soft] = softened / softened.sum()
-                    masks[batch, step, [main, soft]] = 1
         if c['SYMMETRY_AUGMENTATION']:
             augmented, actions, policies = augment(
                 trajectory if c['USE_CONSISTENCY_LOSS'] else observations, actions, policies, rng)

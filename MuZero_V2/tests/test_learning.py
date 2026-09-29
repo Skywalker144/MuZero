@@ -129,15 +129,9 @@ class LearningTests(unittest.TestCase):
             samples = replay.sample(np.random.default_rng(2))
             observations, actions, policies, values, masks, weights = samples
             np.testing.assert_allclose(values.sum(-1), 1)
-            self.assertTrue((masks[:, -1] == 0).all())
-            self.assertTrue((policies[:, -1] == 0).all())
+            np.testing.assert_array_equal(masks, 1)
+            np.testing.assert_allclose(policies[:, -1], 1 / 25)
             for row in range(len(observations)):
-                start = int(observations[row, :2].sum())
-                for step in range(c['UNROLL_STEPS'] + 1):
-                    current = start + step
-                    main = float(current < 9)
-                    opponent = float(current + 1 < 9)
-                    np.testing.assert_array_equal(masks[row, step], [main, main, opponent, opponent])
                 for step in range(1, c['UNROLL_STEPS'] + 1):
                     np.testing.assert_array_equal(values[row, step], values[row, step - 1][::-1])
             model = create_model(c)
