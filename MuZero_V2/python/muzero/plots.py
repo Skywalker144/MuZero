@@ -11,6 +11,7 @@ from matplotlib.ticker import FuncFormatter, MaxNLocator, PercentFormatter
 import numpy as np
 
 from .config import ROOT
+from .replay import PolicyHead
 from .storage import atomic_path
 
 
@@ -79,16 +80,24 @@ def training_figure(history: Sequence[Mapping[str, Any]]) -> Figure:
         _plot_series(axes[1], [('Mean', ORANGE, x, [row['rows'] / row['games'] for row in selfplay])])
         for axis in (axes[0], axes[1]):
             axis.set_xlim(0, max(1, samples * 1.025))
-            axis.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value / 1000:g}k' if abs(value) >= 1000 else f'{value:g}'))
+            axis.xaxis.set_major_locator(MaxNLocator(nbins=5, steps=[1, 2, 5, 10], integer=True))
+            axis.xaxis.set_major_formatter(FuncFormatter(
+                lambda value, _: np.format_float_scientific(value, precision=6, trim='-', exp_digits=1).replace('e+', 'e')
+                if abs(value) >= 1000 else f'{value:g}'))
 
         trained = [row for row in history if row['steps'] > 0]
         x = [row['iteration'] + 1 for row in trained]
         _plot_series(axes[2], [('Total', ORANGE, x, [row['loss'] for row in trained])], logarithmic=True)
-        _plot_series(axes[3], [(label, color, x, [row.get(key, np.nan) for row in trained])
+        components = [(label, color, x, [row.get(key, np.nan) for row in trained])
                                for key, label, color in (('policy_loss', 'Policy', BLUE), ('value_loss', 'Value', GREEN),
                                                           ('consistency_loss', 'Consistency', RED))
-                               if key != 'consistency_loss' or any(row.get('use_consistency_loss') for row in trained)],
-                     logarithmic=True)
+                               if key != 'consistency_loss' or any(row.get('use_consistency_loss') for row in trained)]
+        components.extend(
+            (f'Policy {head.name.lower().replace("_", " ")}', color, x,
+             [row.get('policy_head_losses', {}).get(head.name.lower(), np.nan) for row in trained])
+            for head, color in zip(PolicyHead, ('#56b6c2', ORANGE, '#c678dd', '#d6bd79'))
+        )
+        _plot_series(axes[3], components, logarithmic=True)
         step_losses = [row['step_losses'] for row in trained if row.get('step_losses')]
         series = []
         if step_losses:
