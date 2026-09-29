@@ -145,6 +145,7 @@ def train_iteration(model, optimizer, replay, config, iteration, device, average
         scales[PolicyHead.OPPONENT] = config['OPPONENT_POLICY_LOSS_SCALE']
         scales[PolicyHead.SOFT_OPPONENT] = config['SOFT_POLICY_LOSS_SCALE'] * config['OPPONENT_POLICY_LOSS_SCALE']
     totals = np.zeros(4, dtype=np.float64)
+    policy_head_totals = torch.zeros_like(scales)
     step_totals = torch.zeros(config['UNROLL_STEPS'] + 1, device=device)
     gradient_totals = {name: torch.zeros((), device=device)
                        for name in ('representation', 'dynamics', 'prediction')}
@@ -170,7 +171,9 @@ def train_iteration(model, optimizer, replay, config, iteration, device, average
             sample_losses = torch.zeros((config['BATCH_SIZE'], 3), device=device)
             for step in range(config['UNROLL_STEPS'] + 1):
                 policy_logits, value_logits = model.prediction(hidden)
-                policy_rows = (-(policies[:, step] * F.log_softmax(policy_logits, -1)).sum(-1) * masks[:, step] * scales).sum(-1)
+                policy_head_rows = -(policies[:, step] * F.log_softmax(policy_logits, -1)).sum(-1) * masks[:, step] * scales
+                policy_head_totals += (policy_head_rows.detach() * weights[:, step, None]).mean(0)
+                policy_rows = policy_head_rows.sum(-1)
                 if model.prediction.wdl:
                     value_rows = -(values[:, step] * F.log_softmax(value_logits, -1)).sum(-1)
                 else:
@@ -230,6 +233,8 @@ def train_iteration(model, optimizer, replay, config, iteration, device, average
         group['value_loss'] /= group['samples']
         group['consistency_loss'] /= group['samples']
     return dict(zip(('loss', 'policy_loss', 'value_loss', 'consistency_loss'), totals.tolist())) | {
+        'policy_head_losses': {PolicyHead(head).name.lower(): value
+                               for head, value in enumerate((policy_head_totals / config['TRAIN_STEPS']).tolist())},
         'use_consistency_loss': config['USE_CONSISTENCY_LOSS'], 'consistency_loss_scale': config['CONSISTENCY_LOSS_SCALE'],
         'steps': config['TRAIN_STEPS'], 'train_groups': groups,
         'batch_prepare_seconds': batches.prepare_seconds, 'data_wait_seconds': data_wait_seconds,
