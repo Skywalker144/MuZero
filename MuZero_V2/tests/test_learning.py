@@ -168,6 +168,7 @@ class LearningTests(unittest.TestCase):
                 result = train_iteration(model, create_optimizer(model, c), replay, c, 0, 'cpu', WeightAverage(model, c))
                 self.assertEqual(len(result['step_losses']), unroll + 1)
                 self.assertAlmostEqual(sum(result['step_losses']), result['loss'], places=5)
+                np.testing.assert_allclose(sum(result['policy_head_losses'].values()), result['policy_loss'], rtol=1e-6)
                 for name in ('representation', 'dynamics', 'prediction'):
                     squared = sum(float(parameter.grad.square().sum())
                                   for parameter in getattr(model, name).parameters() if parameter.grad is not None)
@@ -190,6 +191,8 @@ class LearningTests(unittest.TestCase):
             optimizer = create_optimizer(model, c)
             result = train_iteration(model, optimizer, replay, c, 0, 'cpu', WeightAverage(model, c))
             self.assertTrue(np.isfinite(result['value_loss']))
+            self.assertEqual(set(result['policy_head_losses']), {'main'})
+            np.testing.assert_allclose(result['policy_head_losses']['main'], result['policy_loss'], rtol=1e-6)
             self.assertEqual(model.prediction.policy_head.out_channels, 1)
             self.assertEqual(model.prediction.value_head[-1].out_features, 1)
             exported = Path(tmp) / 'model.pt'
