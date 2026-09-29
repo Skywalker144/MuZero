@@ -2,8 +2,8 @@
 
 - 使用与运行入口：[README](../README.md)。
 - 默认参数与配置解析：[baseline](../configs/baseline)、[config.py](../python/muzero/config.py)。
-- 原始棋类 MuZero 预设：[exp_muzero](../configs/exp_muzero)；15×15 至 11×11 混合尺寸实验基线：[exp_baseline](../configs/exp_baseline)。
-- 多尺寸配置：[baseline/env.cfg](../configs/baseline/env.cfg)；混合规则通过配置中的 `RULES` 与 `RULE_WEIGHTS` 设置。
+- 原始棋类 MuZero 预设：[exp_muzero](../configs/exp_muzero)；11×11 棋盘实验基线：[exp_baseline](../configs/exp_baseline)。
+- 棋盘尺寸配置：[baseline/env.cfg](../configs/baseline/env.cfg)（15×15）、[exp_baseline/env.cfg](../configs/exp_baseline/env.cfg)（11×11）；混合规则通过配置中的 `RULES` 与 `RULE_WEIGHTS` 设置。
 - 输入通道、规则编号与产物版本唯一来源：[protocol.json](../protocol.json)；C++ 头由 [generate_protocol.py](../scripts/generate_protocol.py) 生成。
 - Renju 判定：[rules.cpp](../cpp/src/rules.cpp)，递归活三判定改编自 SkyZero V8.1 的 `katago/cpp/game/renju.cpp`。
 - 真实棋规与观测：[game.h](../cpp/include/muzero/game.h)。
