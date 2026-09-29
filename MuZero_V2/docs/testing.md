@@ -12,6 +12,7 @@ MUZERO_TEST_BINARY="$PWD/build/muzero_selfplay" MUZERO_TEST_DEVICE=cuda:0 PYTHON
   python3 -m unittest discover -s tests -p 'test_iteration_recovery.py'
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_bootstrap.py'
 PYTHONPATH=python python3 -m unittest discover -s tests -p 'test_learning.py'
+PYTHONPATH=python conda run -n pytorch python -m unittest discover -s tests -p 'test_absorbing.py'
 PYTHONPATH=python conda run -n pytorch python -m unittest discover -s tests -p 'test_consistency.py'
 MUZERO_TEST_BINARY="$PWD/build/muzero_selfplay" MUZERO_TEST_DEVICE=cuda:0 PYTHONPATH=python \
   conda run -n pytorch python -m unittest discover -s tests -p 'test_consistency.py'
@@ -50,6 +51,7 @@ CONFIG_DIR=configs/minimal_test DATA_DIR=data/smoke bash scripts/run.sh
 - [test_native_bootstrap.py](../tests/test_native_bootstrap.py)：无网络冷启动、首次训练切换、冷启动后采集预算与中断恢复、导出失败恢复、跨线程对局恢复及预训练模型；`MUZERO_TEST_DEVICE` 指定训练和网络推理设备。
 - [test_data_pipeline.py](../tests/test_data_pipeline.py)：分片压缩与损坏检测、提交后续跑、写入失败传播、采样预取一致性与退出、回放快照、EMA 恢复及导出来源。
 - [test_learning.py](../tests/test_learning.py)：动态 batch 导出、recurrent 推理、展开目标、D4 动作映射与优化器更新。
+- [test_absorbing.py](../tests/test_absorbing.py)：终局动作覆盖与可复现性、单头及四头策略边界、价值视角、混合画布与 D4、consistency 掩码及真实网络策略梯度；`MUZERO_TEST_DEVICE` 指定梯度测试设备。
 - [test_consistency.py](../tests/test_consistency.py)：多步真实观测与 D4 对齐、终局掩码、停止梯度、padding 不变性、旧配置与 checkpoint 的 Adam/EMA 恢复、开关切换、辅助头导出移除；设置原生可执行文件后验证 C++ 自对弈与原目录连续切换续训。
 - [test_plots.py](../tests/test_plots.py)：指标曲线、冷启动、无对局轮次与图片原子写入；真实训练与续跑绘图见 [test_native_pipeline.py](../tests/test_native_pipeline.py)。
 - [test_network.py](../tests/test_network.py)：独立网络深度与宽度、零残差块、状态递归、padding 不变性、梯度及 checkpoint 架构校验。
