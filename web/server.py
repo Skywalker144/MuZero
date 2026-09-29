@@ -91,7 +91,7 @@ def main():
     if not models:
         parser.error('未找到导出的模型，请用 --model 指定 TorchScript 模型')
     if not args.binary.is_file():
-        parser.error('缺少 muzero_eval，请先运行 web/run.sh 构建')
+        parser.error('缺少 muzero_eval，请先运行 web/webui.sh 构建')
     config = load_eval_config(args.config_dir)
     sizes = load_config(args.config_dir, environ={})['BOARD_SIZES']
     app = App(args.binary, models, config, max(sizes))
